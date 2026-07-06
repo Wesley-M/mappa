@@ -236,7 +236,7 @@ A handful of small windows to play with — each a short, heavily-commented prog
 | `runFocusExplorer` | Pick an entity, narrow the map to its neighbourhood with `focus`. |
 | `runDocumentRoundTrip` | Write the native `.mappa` binary to disk and draw it back. |
 | `runSavedLayout` | Drag boxes to arrange; every move persists, and reopening restores it exactly. |
-| `runBigSchema` | Fifty tables in named regions — pan, zoom, and the corner overview minimap. |
+| `runBigSchema` | A stress-test playground: dial tables, columns, and layout up to the limit; pan, zoom, minimap. |
 
 The samples compile as part of `check`, so they can't rot.
 
