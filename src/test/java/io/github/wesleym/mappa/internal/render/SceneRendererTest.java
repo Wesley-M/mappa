@@ -187,10 +187,11 @@ class SceneRendererTest {
 				active, active.name(), -1, true, null));
 	}
 
-	// The README's focus/select still: a frozen frame of the click-spotlight — the active box and its
-	// neighbours lit, everything else dimmed, flow comets travelling its relationships. Writes to build/.
+	// Smoke test of the full spotlight render path — the active box and its neighbours lit, everything else
+	// dimmed, flow comets and bright join labels over its relationships — exercising drawFlow and
+	// drawJoinLabelsOver together. (The README's spotlight image is the vector one from DocImagesTest.)
 	@Test
-	void writesSpotlightShowcase() throws Exception {
+	void rendersTheSpotlightPath() throws Exception {
 		MappaTheme theme = MappaTheme.light();
 		Prepared p = prepare(scene(commerce(), false));
 		EntityBox active = p.scene().tables().stream()
@@ -231,7 +232,7 @@ class SceneRendererTest {
 
 		File dir = new File("build");
 		dir.mkdirs();
-		ImageIO.write(img, "png", new File(dir, "showcase-spotlight.png"));
+		ImageIO.write(img, "png", new File(dir, "spotlight-smoke.png"));
 	}
 
 	@Test

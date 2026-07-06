@@ -36,6 +36,11 @@ counts and indices cost a single byte.
 That combination — a de-duplicated string table plus deflate — is why a `.mappa` document comes out
 smaller than the raw text of the names it carries, let alone an equivalent JSON.
 
+After the model comes an optional **positions** block (format v2): a saved box centre per hand-arranged
+entity, rounded to whole pixels and zig-zag encoded so a negative coordinate stays a short varint. It's how
+a diagram reopens exactly as you arranged it — and, when every box is placed, lets the view skip auto-layout
+entirely. A freshly built map writes an empty block, so it costs one byte.
+
 ## Why not JSON
 
 JSON would work, and for interchange with other tools it might still be the right call — but for Mappa's

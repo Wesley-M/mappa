@@ -35,6 +35,7 @@ import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.GraphicsConfiguration;
 import java.awt.Point;
+import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.TexturePaint;
 import java.awt.event.ComponentAdapter;
@@ -46,6 +47,7 @@ import java.awt.geom.AffineTransform;
 import java.awt.geom.Path2D;
 import java.awt.geom.Point2D;
 import java.awt.geom.Rectangle2D;
+import java.awt.geom.RoundRectangle2D;
 import java.awt.image.BufferedImage;
 import java.io.BufferedOutputStream;
 import java.io.File;
@@ -94,6 +96,11 @@ final class MappaCanvas extends JComponent {
 	// PNG. Bounded by the pixel budget above, so a large schema scales back toward 1:1 instead of OOM-ing.
 	private static final double EXPORT_SUPERSAMPLE = 3.0;
 	private static final int CLICK_SLOP = 4;   // pointer move under this (px) counts as a click, not a drag
+	private static final int MINIMAP_MIN_TABLES = 20;   // the overview minimap appears once a diagram is this large
+	private static final int MINIMAP_W = 208;
+	private static final int MINIMAP_H = 148;
+	private static final int MINIMAP_MARGIN = 16;
+	private static final int MINIMAP_PAD = 10;
 	private static final int GRID_SPACING = 26;   // muted dot grid backdrop
 
 	private final MappaTheme theme;
@@ -149,6 +156,7 @@ final class MappaCanvas extends JComponent {
 	private double scale = 1.0;
 	private double offsetX;
 	private double offsetY;
+	private boolean navigatingMinimap;   // the pointer is dragging inside the overview minimap
 	private final ScrollAxisLock axisLock = new ScrollAxisLock();   // keeps a zoom gesture from wobbling sideways
 	// Wheel-device stream, used ONLY to pick zoom smoothing (glide a notch, apply fractional deltas
 	// direct) — both branches zoom, so a misclassified high-resolution mouse wheel still behaves.
@@ -181,6 +189,7 @@ final class MappaCanvas extends JComponent {
 	private double labelGrabY;
 	private Consumer<String> onRemoveTable = name -> { };
 	private Consumer<String> onActiveTable = name -> { };   // notified with the selected table (or null)
+	private Consumer<MappaMap> onArranged = m -> { };       // notified with the positioned map after a box drag
 	private Runnable onViewChanged = () -> { };             // fired when the viewport pans/zooms/refits
 	private TableActions tableActions = TableActions.none();   // shell actions for the right-click menu
 	// Drives the flowing-particle animation along the active table's edges; only ticks while one is active.
@@ -265,6 +274,11 @@ final class MappaCanvas extends JComponent {
 		this.onActiveTable = onActiveTable;
 	}
 
+	/** Notified with the positioned map whenever the user drags a box — the arrangement to persist. */
+	void setArrangedHandler(Consumer<MappaMap> onArranged) {
+		this.onArranged = onArranged == null ? m -> { } : onArranged;
+	}
+
 	/** Called whenever the viewport changes (pan, zoom, fit, table drag) so anchored chrome can follow. */
 	void setViewChangedHandler(Runnable onViewChanged) {
 		this.onViewChanged = onViewChanged;
@@ -328,6 +342,7 @@ final class MappaCanvas extends JComponent {
 		}
 		layoutStyle = style;
 		if (graph != null) {
+			graph = graph.withPositions(java.util.Map.of());   // a new layout style discards the hand-arrangement
 			rebuildScene(true);   // positions change wholesale — refit so the new arrangement is framed
 		}
 	}
@@ -426,41 +441,8 @@ final class MappaCanvas extends JComponent {
 	// Label each community from its tables, weighting the hub (most FK-connected) tables and excluding connectors.
 	// All communities are named together so a token common to the whole schema can be filtered out.
 	private void updateClusterNames() {
-		if (LightweightMode.isOn()) {
-			renderer.setClusterNames(Map.of());   // regions aren't drawn in lightweight — skip the naming heuristics
-			return;
-		}
-		List<EntityBox> tables = scene.tables();
-		int[] within = new int[tables.size()];
-		int[] cross = new int[tables.size()];
-		for (Link e : scene.edges()) {
-			int a = e.from();
-			int b = e.to();
-			if (a < 0 || b < 0 || a >= tables.size() || b >= tables.size() || a == b) {
-				continue;
-			}
-			if (tables.get(a).clusterId() == tables.get(b).clusterId()) {
-				within[a]++;
-				within[b]++;
-			}
-			else {
-				cross[a]++;
-				cross[b]++;
-			}
-		}
-		Map<Integer, List<
-				CommunityNames.TableNode>> byCluster =
-				new LinkedHashMap<>();
-		for (int i = 0; i < tables.size(); i++) {
-			EntityBox t = tables.get(i);
-			if (t.clusterId() >= 0) {
-				byCluster.computeIfAbsent(t.clusterId(), k -> new ArrayList<>()).add(
-						new CommunityNames.TableNode(
-								t.name(), within[i], cross[i]));
-			}
-		}
-		renderer.setClusterNames(
-				CommunityNames.nameAll(byCluster));
+		// Regions aren't drawn in lightweight mode — skip the naming heuristics entirely.
+		renderer.setClusterNames(LightweightMode.isOn() ? Map.of() : StaticRender.clusterNames(scene));
 	}
 
 	/** When true, hides the declared (existing) FK edges and draws only the inferred ones; re-lays-out. */
@@ -724,10 +706,94 @@ final class MappaCanvas extends JComponent {
 		}
 		overlay.dispose();
 
+		paintMinimap(g);
+
 		// A resize just finished: the placeholder fades out over the freshly drawn diagram beneath.
 		if (placeholderAlpha > 0.004f) {
 			overlayPlaceholder(g);
 		}
+	}
+
+	// ---- overview minimap ----------------------------------------------------------------------------
+
+	private record MiniView(Rectangle panel, double scale, double originX, double originY, Rectangle2D world) {
+		double toX(double worldX) {
+			return originX + (worldX - world.getX()) * scale;
+		}
+
+		double toY(double worldY) {
+			return originY + (worldY - world.getY()) * scale;
+		}
+
+		double toWorldX(double miniX) {
+			return world.getX() + (miniX - originX) / scale;
+		}
+
+		double toWorldY(double miniY) {
+			return world.getY() + (miniY - originY) / scale;
+		}
+	}
+
+	// The minimap layout for the current scene, or null when the diagram is small enough not to need one.
+	private MiniView miniView() {
+		if (scene == null || scene.tables().size() < MINIMAP_MIN_TABLES) {
+			return null;
+		}
+		Rectangle2D world = scene.worldBounds();
+		if (world == null || world.getWidth() <= 0 || world.getHeight() <= 0) {
+			return null;
+		}
+		int px = getWidth() - MINIMAP_W - MINIMAP_MARGIN;
+		int py = getHeight() - MINIMAP_H - MINIMAP_MARGIN;
+		double ms = Math.min((MINIMAP_W - 2.0 * MINIMAP_PAD) / world.getWidth(),
+				(MINIMAP_H - 2.0 * MINIMAP_PAD) / world.getHeight());
+		double originX = px + (MINIMAP_W - world.getWidth() * ms) / 2;
+		double originY = py + (MINIMAP_H - world.getHeight() * ms) / 2;
+		return new MiniView(new Rectangle(px, py, MINIMAP_W, MINIMAP_H), ms, originX, originY, world);
+	}
+
+	// The overview inset: every box as a dot, and the current viewport as a frame. Drag it to jump the view.
+	private void paintMinimap(Graphics g) {
+		MiniView mv = miniView();
+		if (mv == null || LightweightMode.isOn()) {
+			return;
+		}
+		Graphics2D g2 = (Graphics2D) g.create();
+		g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+		Rectangle p = mv.panel();
+		g2.setColor(new Color(theme.surface().getRed(), theme.surface().getGreen(), theme.surface().getBlue(), 235));
+		g2.fillRoundRect(p.x, p.y, p.width, p.height, 12, 12);
+		g2.setColor(theme.line());
+		g2.setStroke(new BasicStroke(1));
+		g2.drawRoundRect(p.x, p.y, p.width, p.height, 12, 12);
+		g2.setClip(new RoundRectangle2D.Double(p.x, p.y, p.width, p.height, 12, 12));
+
+		for (EntityBox box : scene.tables()) {
+			Rectangle2D b = box.bounds();
+			Color dot = box == active ? theme.accent()
+					: new Color(theme.muted().getRed(), theme.muted().getGreen(), theme.muted().getBlue(), 150);
+			g2.setColor(dot);
+			g2.fill(new Rectangle2D.Double(mv.toX(b.getX()), mv.toY(b.getY()),
+					Math.max(1.5, b.getWidth() * mv.scale()), Math.max(1.5, b.getHeight() * mv.scale())));
+		}
+
+		Point2D topLeft = toWorld(new Point(0, 0));
+		Point2D bottomRight = toWorld(new Point(getWidth(), getHeight()));
+		g2.setColor(theme.entityHeader());
+		g2.setStroke(new BasicStroke(1.5f));
+		g2.draw(new Rectangle2D.Double(mv.toX(topLeft.getX()), mv.toY(topLeft.getY()),
+				(bottomRight.getX() - topLeft.getX()) * mv.scale(), (bottomRight.getY() - topLeft.getY()) * mv.scale()));
+		g2.dispose();
+	}
+
+	// Recenters the main view on the world point under a minimap click/drag.
+	private void navigateFromMinimap(Point at, MiniView mv) {
+		double worldX = mv.toWorldX(at.x);
+		double worldY = mv.toWorldY(at.y);
+		offsetX = getWidth() / 2.0 - scale * worldX;
+		offsetY = getHeight() / 2.0 - scale * worldY;
+		repaint();
+		onViewChanged.run();
 	}
 
 	// The minimal placeholder shown only while a resize is in flight: the diagram backdrop, a single small
@@ -1288,6 +1354,12 @@ final class MappaCanvas extends JComponent {
 		if (maybeShowMenu(e)) {
 			return;
 		}
+		MiniView mini = miniView();
+		if (mini != null && mini.panel().contains(e.getPoint())) {
+			navigatingMinimap = true;
+			navigateFromMinimap(e.getPoint(), mini);
+			return;
+		}
 		pressPoint = e.getPoint();
 		Point2D world = toWorld(e.getPoint());
 		if (showJoinColumns) {
@@ -1312,6 +1384,13 @@ final class MappaCanvas extends JComponent {
 
 	// Drag: move a grabbed label, drag a table (re-routing its edges live), or pan the canvas.
 	private void onMouseDragged(MouseEvent e) {
+		if (navigatingMinimap) {
+			MiniView mini = miniView();
+			if (mini != null) {
+				navigateFromMinimap(e.getPoint(), mini);
+			}
+			return;
+		}
 		if (pressPoint == null || pressPoint.distance(e.getPoint()) < CLICK_SLOP) {
 			return;   // still within click slop — not a drag yet
 		}
@@ -1347,6 +1426,12 @@ final class MappaCanvas extends JComponent {
 
 	// Release: finish a label/table drag, or — if it was a click — select / trace-path / clear.
 	private void onMouseReleased(MouseEvent e) {
+		if (navigatingMinimap) {
+			navigatingMinimap = false;
+			bufferDirty = true;   // re-bake the scene crisp at the jumped-to position
+			repaint();
+			return;
+		}
 		if (draggingLabel >= 0) {
 			boolean moved = pressPoint != null && pressPoint.distance(e.getPoint()) >= CLICK_SLOP;
 			if (!moved) {
@@ -1367,6 +1452,10 @@ final class MappaCanvas extends JComponent {
 			bufferDirty = true;     // fold the dropped table back into the static buffer
 			geometryDirty = true;   // re-run the label force pass now the drag has settled
 			repaint();
+			// Freeze the whole arrangement onto the map: later rebuilds (a detail or label toggle) then
+			// restore it instead of re-laying-out, and the host is handed the positioned map to save.
+			graph = graph.withPositions(SceneBuilder.positionsOf(scene));
+			onArranged.accept(graph);
 		}
 		else if (wasClick) {
 			if (e.isShiftDown() && active != null && pressedTable != null && pressedTable != active) {

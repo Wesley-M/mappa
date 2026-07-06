@@ -6,6 +6,7 @@ import io.github.wesleym.mappa.internal.layout.LayoutEngine;
 import io.github.wesleym.mappa.internal.layout.LayoutStyle;
 
 import java.awt.Font;
+import java.awt.geom.Point2D;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -69,6 +70,24 @@ public final class SceneBuilder {
 				.map(t -> new LayoutEngine.Box(
 						measureWidth(t, titleFont, rowFont, textWidth), measureHeight(t, capHeights)))
 				.toList();
+
+		// A hand-arranged map that has a saved centre for every box skips the layout engine entirely — an
+		// exact restore, and the fast path that keeps reopening a large saved diagram instant.
+		Map<String, MappaMap.Position> positions = map.positions();
+		if (!tables.isEmpty() && tables.stream().allMatch(t -> positions.containsKey(t.name()))) {
+			List<List<Point2D.Double>> noPaths = new ArrayList<>(edges.size());
+			for (int i = 0; i < tables.size(); i++) {
+				MappaMap.Position p = positions.get(tables.get(i).name());
+				tables.get(i).placeCentre(new Point2D.Double(p.x(), p.y()),
+						sizes.get(i).width(), sizes.get(i).height());
+				tables.get(i).setClusterId(-1);   // hand-placed: no auto community regions
+			}
+			for (int i = 0; i < edges.size(); i++) {
+				noPaths.add(List.of());
+			}
+			return new Scene(tables, edges, noPaths);
+		}
+
 		List<LayoutEngine.Edge> layoutEdges = edges.stream()
 				.map(e -> new LayoutEngine.Edge(e.from(), e.to()))
 				.toList();
@@ -79,8 +98,23 @@ public final class SceneBuilder {
 		for (int i = 0; i < tables.size(); i++) {
 			tables.get(i).placeCentre(layout.centres().get(i), sizes.get(i).width(), sizes.get(i).height());
 			tables.get(i).setClusterId(layout.clusters().get(i));
+			// A box with a saved centre is pinned there; the rest keep the fresh auto-layout around it.
+			MappaMap.Position pinned = positions.get(tables.get(i).name());
+			if (pinned != null) {
+				tables.get(i).moveCentreTo(pinned.x(), pinned.y());
+			}
 		}
 		return new Scene(tables, edges, layout.edgePaths());
+	}
+
+	/** The current box centres of {@code scene}, keyed by entity name — the arrangement to save via
+	 *  {@link MappaMap#withPositions}. */
+	public static Map<String, MappaMap.Position> positionsOf(Scene scene) {
+		Map<String, MappaMap.Position> out = new LinkedHashMap<>();
+		for (EntityBox box : scene.tables()) {
+			out.put(box.name(), new MappaMap.Position(box.bounds().getCenterX(), box.bounds().getCenterY()));
+		}
+		return out;
 	}
 
 	// An entity's fields, optionally narrowed to keys. A field counts as a foreign key if the map declares it a

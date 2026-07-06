@@ -44,13 +44,13 @@ class MappaCodecLowLevelTest {
 		assertEquals("", read.relationships().get(1).toEntity(), "unknown 'to' entity → empty");
 	}
 
-	// MAPPA magic, version 1, flags=0 (uncompressed); one entity "a" with kind ordinal 99 and one field.
+	// MAPPA magic, version 2, flags=0 (uncompressed); one entity "a" with kind ordinal 99 and one field.
 	private static byte[] document(int fieldTypeId) {
 		ByteArrayOutputStream b = new ByteArrayOutputStream();
 		for (char c : "MAPPA".toCharArray()) {
 			b.write(c);
 		}
-		b.write(1);   // version
+		b.write(2);   // version
 		b.write(0);   // flags: uncompressed
 		var(b, 5);
 		string(b, "");
@@ -67,6 +67,7 @@ class MappaCodecLowLevelTest {
 		var(b, fieldTypeId);
 		var(b, 1);    // flags: primary key
 		var(b, 0);    // relationship count
+		var(b, 0);    // position count (v2)
 		return b.toByteArray();
 	}
 

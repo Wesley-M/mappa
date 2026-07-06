@@ -18,7 +18,7 @@ import java.util.zip.InflaterInputStream;
 /** Versioned native binary codec for {@code .mappa}. */
 public final class MappaCodec {
 	private static final byte[] MAGIC = { 'M', 'A', 'P', 'P', 'A' };
-	private static final int VERSION = 1;
+	private static final int VERSION = 2;   // v2 adds the trailing box-position block
 	private static final int FLAG_COMPRESSED = 1;
 
 	private MappaCodec() { }
@@ -56,6 +56,22 @@ public final class MappaCodec {
 				out.var(entityIndex.getOrDefault(r.toEntity(), -1) + 1);
 				out.var(strings.id(r.toField()));
 				out.var(r.suggested() ? 1 : 0);
+			}
+
+			// Saved box centres, by entity index — a hand-arranged layout. Rounded to whole pixels and
+			// zig-zag encoded so a negative coordinate stays a short varint.
+			List<Map.Entry<Integer, MappaMap.Position>> placed = new ArrayList<>();
+			for (Map.Entry<String, MappaMap.Position> e : map.positions().entrySet()) {
+				Integer index = entityIndex.get(e.getKey());
+				if (index != null) {
+					placed.add(Map.entry(index, e.getValue()));
+				}
+			}
+			out.var(placed.size());
+			for (Map.Entry<Integer, MappaMap.Position> e : placed) {
+				out.var(e.getKey());
+				out.zigzag((int) Math.round(e.getValue().x()));
+				out.zigzag((int) Math.round(e.getValue().y()));
 			}
 
 			ByteArrayOutputStream compressed = new ByteArrayOutputStream();
@@ -123,7 +139,17 @@ public final class MappaCodec {
 			String toEntity = toIndex >= 0 && toIndex < entities.size() ? entities.get(toIndex).name() : "";
 			relationships.add(new MappaMap.Relationship(fromEntity, fromField, toEntity, toField, suggested));
 		}
-		return new MappaMap(title, entities, relationships);
+		int positionCount = in.var();
+		Map<String, MappaMap.Position> positions = new LinkedHashMap<>();
+		for (int i = 0; i < positionCount; i++) {
+			int index = in.var();
+			double x = in.zigzag();
+			double y = in.zigzag();
+			if (index >= 0 && index < entities.size()) {
+				positions.put(entities.get(index).name(), new MappaMap.Position(x, y));
+			}
+		}
+		return new MappaMap(title, entities, relationships, positions);
 	}
 
 	private static String string(List<String> strings, int id) throws IOException {
@@ -190,6 +216,11 @@ public final class MappaCodec {
 			out.write(v);
 		}
 
+		/** Zig-zag varint: maps signed values so small magnitudes (either sign) stay short. */
+		void zigzag(int value) {
+			var((value << 1) ^ (value >> 31));
+		}
+
 		void string(String value) {
 			byte[] bytes = (value == null ? "" : value).getBytes(StandardCharsets.UTF_8);
 			var(bytes.length);
@@ -231,6 +262,11 @@ public final class MappaCodec {
 				shift += 7;
 			}
 			throw new IOException("Varint is too long.");
+		}
+
+		int zigzag() throws IOException {
+			int v = var();
+			return (v >>> 1) ^ -(v & 1);
 		}
 
 		String string() throws IOException {

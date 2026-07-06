@@ -7,7 +7,9 @@ import io.github.wesleym.mappa.MappaTheme;
 import org.junit.jupiter.api.Test;
 
 import java.awt.image.BufferedImage;
+import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -26,6 +28,21 @@ class CanvasRenderTest {
 						.column("total", "decimal"))
 				.table("customers", t -> t.primaryKey("id", "uuid").column("email", "text"))
 				.build();
+	}
+
+	@Test
+	void restoresStoredPositions() {
+		MappaMap map = store().withPositions(Map.of(
+				"orders", new MappaMap.Position(-100, 200),
+				"customers", new MappaMap.Position(300, 50)));
+		MappaCanvas canvas = new MappaCanvas(MappaTheme.light());
+		canvas.setMap(map);
+
+		MappaCanvas.ExportContent content = canvas.buildExportContent();
+		var orders = content.scene().tables().stream()
+				.filter(t -> t.name().equals("orders")).findFirst().orElseThrow();
+		assertEquals(-100, orders.bounds().getCenterX(), 0.5, "box restored to its saved centre x");
+		assertEquals(200, orders.bounds().getCenterY(), 0.5, "box restored to its saved centre y");
 	}
 
 	@Test

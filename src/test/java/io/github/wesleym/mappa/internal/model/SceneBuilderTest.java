@@ -69,6 +69,37 @@ class SceneBuilderTest {
 	}
 
 	@Test
+	void restoresSavedPositionsExactlyAndSkipsLayout() {
+		MappaMap map = map(
+				List.of(node("a", pk("id")), node("b", pk("id")), node("c", pk("id"))),
+				List.of(rel("a", "id", "b", "id"), rel("b", "id", "c", "id")));
+		Scene auto = build(map);
+		java.util.Map<String, MappaMap.Position> saved = SceneBuilder.positionsOf(auto);
+
+		Scene restored = build(map.withPositions(saved));
+
+		for (EntityBox box : restored.tables()) {
+			MappaMap.Position p = saved.get(box.name());
+			assertEquals(p.x(), box.bounds().getCenterX(), 0.5, box.name() + " x restored");
+			assertEquals(p.y(), box.bounds().getCenterY(), 0.5, box.name() + " y restored");
+			assertEquals(-1, box.clusterId(), "the skip-layout path leaves boxes un-clustered");
+		}
+	}
+
+	@Test
+	void pinsAnIndividualBoxWhileAutoPlacingTheRest() {
+		MappaMap map = map(
+				List.of(node("a", pk("id")), node("b", pk("id"))),
+				List.of(rel("a", "id", "b", "id")))
+				.withPositions(java.util.Map.of("a", new MappaMap.Position(999, 777)));
+
+		EntityBox a = build(map).tables().stream()
+				.filter(t -> t.name().equals("a")).findFirst().orElseThrow();
+		assertEquals(999, a.bounds().getCenterX(), 0.5);
+		assertEquals(777, a.bounds().getCenterY(), 0.5);
+	}
+
+	@Test
 	void collapsesAnExactDuplicateRelationship() {
 		MappaMap map = map(
 				List.of(node("orders", fk("user_id")), node("users", pk("id"))),

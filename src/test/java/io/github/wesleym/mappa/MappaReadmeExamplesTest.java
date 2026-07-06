@@ -2,58 +2,57 @@ package io.github.wesleym.mappa;
 
 import org.junit.jupiter.api.Test;
 
-import javax.imageio.ImageIO;
-
-import java.awt.Color;
-import java.awt.image.BufferedImage;
-import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Renders every example in the README, code-for-code — each test body is the snippet the README shows, so
- * the published code and the published diagram can never drift apart. Writes {@code build/readme-*.png}.
+ * Renders the README's snippet-adjacent examples, code-for-code — each test body is the snippet the README
+ * shows, ending in {@code toSvg()}, so the published code and the published diagram can never drift apart.
+ * Writes {@code build/readme-*.svg} (vector, glyphs outlined — no font dependency).
  */
 class MappaReadmeExamplesTest {
 
 	@Test
 	void quickstart() throws Exception {
 		var map = Mappa.schema("Store")
+				.table("customers", t -> t
+						.primaryKey("id", "uuid")
+						.column("email", "text")
+						.column("full_name", "text"))
+				.table("products", t -> t
+						.primaryKey("id", "uuid")
+						.column("name", "text")
+						.column("price", "decimal"))
 				.table("orders", t -> t
 						.primaryKey("id", "uuid")
 						.reference("customer_id", "uuid", "customers", "id")
 						.column("total", "decimal"))
-				.table("customers", t -> t
+				.table("order_items", t -> t
 						.primaryKey("id", "uuid")
-						.column("email", "text"))
+						.reference("order_id", "uuid", "orders", "id")
+						.reference("product_id", "uuid", "products", "id")
+						.column("quantity", "int"))
 				.build();
 
-		write("readme-quickstart", Mappa.view(map).image(760, 460));
+		write("readme-quickstart", Mappa.view(map).toSvg());
 	}
 
 	@Test
 	void curatedControls() throws Exception {
 		var map = Fixtures.commerce();
 
-		BufferedImage image = Mappa.view(map)
+		String svg = Mappa.view(map)
 				.layout(MappaLayout.LAYERED)
 				.edges(MappaEdges.CURVED)
 				.detail(MappaDetail.KEYS)
 				.background(MappaBackground.DOTS)
 				.theme(MappaTheme.dark())
-				.image(900, 620);
+				.toSvg();
 
-		write("readme-controls", image);
-	}
-
-	@Test
-	void focusOnOneEntity() throws Exception {
-		MappaMap neighbourhood = Fixtures.commerce().focus("orders");
-
-		write("readme-focus", Mappa.view(neighbourhood)
-				.layout(MappaLayout.LAYERED)
-				.relationshipLabels(true)
-				.image(820, 560));
+		write("readme-controls", svg);
 	}
 
 	@Test
@@ -62,14 +61,15 @@ class MappaReadmeExamplesTest {
 				.layout(MappaLayout.LAYERED)
 				.edges(MappaEdges.DIRECTIONAL)
 				.detail(MappaDetail.KEYS)
-				.image(900, 600));
+				.relationshipLabels(true)
+				.toSvg());
 	}
 
-	static void write(String name, BufferedImage image) throws Exception {
-		File dir = new File("build");
-		dir.mkdirs();
-		File out = new File(dir, name + ".png");
-		ImageIO.write(image, "png", out);
-		assertTrue(out.length() > 0, "wrote " + out);
+	static void write(String name, String svg) throws Exception {
+		Path dir = Path.of("build");
+		Files.createDirectories(dir);
+		Path out = dir.resolve(name + ".svg");
+		Files.writeString(out, svg, StandardCharsets.UTF_8);
+		assertTrue(Files.size(out) > 0 && svg.contains("</svg>"), "wrote " + out);
 	}
 }

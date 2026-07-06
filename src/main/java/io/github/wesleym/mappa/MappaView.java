@@ -21,6 +21,7 @@ public final class MappaView {
 	private MappaTheme theme = MappaTheme.light();
 	private final List<EntityAction> actions = new ArrayList<>();
 	private Consumer<MappaMap.Entity> onEntitySelected = entity -> { };
+	private Consumer<MappaMap> onArranged = m -> { };
 
 	MappaView(MappaMap map) {
 		this.map = Objects.requireNonNull(map, "map");
@@ -70,9 +71,18 @@ public final class MappaView {
 		return this;
 	}
 
+	/**
+	 * Receives a positioned {@link MappaMap} whenever the user drags a box in the live view — the current
+	 * hand-arrangement. Persist it (e.g. {@code map.write(path)}) and reopen it to restore the layout exactly.
+	 */
+	public MappaView onArranged(Consumer<MappaMap> handler) {
+		this.onArranged = handler == null ? m -> { } : handler;
+		return this;
+	}
+
 	/** Returns a live Swing component with pan, zoom, drag, hover-spotlight, search, fit, and context actions. */
 	public JComponent component() {
-		return StaticRender.live(map, options, theme, onEntitySelected);
+		return StaticRender.live(map, options, theme, onEntitySelected, onArranged);
 	}
 
 	/** Renders the full map to a new image. */

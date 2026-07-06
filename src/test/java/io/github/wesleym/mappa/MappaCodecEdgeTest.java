@@ -38,6 +38,27 @@ class MappaCodecEdgeTest {
 	}
 
 	@Test
+	void roundTripsSavedBoxPositions() throws IOException {
+		MappaMap arranged = Fixtures.store().withPositions(java.util.Map.of(
+				"orders", new MappaMap.Position(-120.6, 340.4),   // negative + fractional → rounded, zig-zagged
+				"customers", new MappaMap.Position(500, 80)));
+		MappaMap read = Mappa.read(arranged.toBytes());
+
+		assertEquals(2, read.positions().size());
+		assertEquals(-121.0, read.positions().get("orders").x());   // rounds to the nearest whole pixel
+		assertEquals(340.0, read.positions().get("orders").y());
+		assertEquals(500.0, read.positions().get("customers").x());
+	}
+
+	@Test
+	void positionsForUnknownEntitiesAreDroppedNotWritten() throws IOException {
+		MappaMap map = Fixtures.store().withPositions(java.util.Map.of(
+				"ghost", new MappaMap.Position(10, 10)));   // no such entity
+		assertTrue(map.positions().isEmpty(), "a position for a missing entity is dropped");
+		assertTrue(Mappa.read(map.toBytes()).positions().isEmpty());
+	}
+
+	@Test
 	void roundTripsAnEmptyMap() throws IOException {
 		MappaMap read = Mappa.read(new MappaMap("Nothing", List.of(), List.of()).toBytes());
 		assertEquals("Nothing", read.title());

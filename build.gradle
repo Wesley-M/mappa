@@ -83,6 +83,7 @@ def sampleMains = [
     ThemeGallery     : 'live re-theming across a handful of one-expression themes',
     FocusExplorer    : 'the interactive-host pattern: pick an entity, focus() to its neighbourhood',
     DocumentRoundTrip: 'write the native .mappa binary to disk and draw it back',
+    SavedLayout      : 'drag boxes to arrange; every move persists, and reopening restores it exactly',
 ]
 sampleMains.each { name, blurb ->
     tasks.register("run${name}", JavaExec) {

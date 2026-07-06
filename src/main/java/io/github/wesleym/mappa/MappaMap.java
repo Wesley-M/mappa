@@ -7,9 +7,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -18,11 +20,18 @@ public final class MappaMap {
 	private final String title;
 	private final List<Entity> entities;
 	private final List<Relationship> relationships;
+	private final Map<String, Position> positions;
 
 	public MappaMap(String title, List<Entity> entities, List<Relationship> relationships) {
+		this(title, entities, relationships, Map.of());
+	}
+
+	public MappaMap(String title, List<Entity> entities, List<Relationship> relationships,
+			Map<String, Position> positions) {
 		this.title = Mappa.text(title);
 		this.entities = copy(entities);
 		this.relationships = copy(relationships);
+		this.positions = keepPositionsForEntities(positions, this.entities);
 	}
 
 	public String title() {
@@ -37,9 +46,26 @@ public final class MappaMap {
 		return relationships;
 	}
 
+	/**
+	 * The saved box centres, keyed by entity name — a hand-arranged layout to restore. Empty for a freshly
+	 * built map; populated by reading a positioned {@code .mappa} or by the interactive view's arrangement
+	 * capture. When every entity has a position, the view restores the layout exactly and skips auto-layout.
+	 */
+	public Map<String, Position> positions() {
+		return positions;
+	}
+
+	/** Returns a copy of this map carrying {@code positions} (entries for unknown entities are dropped). */
+	public MappaMap withPositions(Map<String, Position> positions) {
+		return new MappaMap(title, entities, relationships, positions);
+	}
+
 	public boolean isEmpty() {
 		return entities.isEmpty();
 	}
+
+	/** A saved box centre for an entity, in world coordinates. */
+	public record Position(double x, double y) { }
 
 	/** Returns a map containing only {@code names} and relationships whose ends remain visible. */
 	public MappaMap select(Collection<String> names) {
@@ -50,7 +76,7 @@ public final class MappaMap {
 		List<Relationship> edges = relationships.stream()
 				.filter(r -> selected.contains(r.fromEntity()) && selected.contains(r.toEntity()))
 				.toList();
-		return new MappaMap(title, kept, edges);
+		return new MappaMap(title, kept, edges, positions);
 	}
 
 	/** Returns {@code entityName} plus every directly related entity. */
@@ -76,7 +102,7 @@ public final class MappaMap {
 		List<Entity> kept = entities.stream()
 				.filter(e -> selected.contains(e.name()))
 				.toList();
-		return new MappaMap(title, kept, edges);
+		return new MappaMap(title, kept, edges, positions);
 	}
 
 	/** Serializes this map as a compact native {@code .mappa} document. */
@@ -122,6 +148,26 @@ public final class MappaMap {
 			toEntity = Mappa.text(toEntity);
 			toField = Mappa.text(toField);
 		}
+	}
+
+	// Positions keyed by an entity name that no longer exists (after a select/focus, or a stale document) are
+	// dropped, so positions() never references a box that isn't in the map.
+	private static Map<String, Position> keepPositionsForEntities(Map<String, Position> positions,
+			List<Entity> entities) {
+		if (positions == null || positions.isEmpty()) {
+			return Map.of();
+		}
+		Set<String> names = new LinkedHashSet<>();
+		for (Entity entity : entities) {
+			names.add(entity.name());
+		}
+		Map<String, Position> kept = new LinkedHashMap<>();
+		for (Map.Entry<String, Position> e : positions.entrySet()) {
+			if (e.getValue() != null && names.contains(e.getKey())) {
+				kept.put(e.getKey(), e.getValue());
+			}
+		}
+		return Map.copyOf(kept);
 	}
 
 	private static <T> List<T> copy(List<T> values) {

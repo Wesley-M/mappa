@@ -63,10 +63,21 @@ final class SvgGraphics2D extends Graphics2D {
 	private Font font = new Font(Font.SANS_SERIF, Font.PLAIN, 12);
 	private Composite composite = AlphaComposite.SrcOver;
 	private Shape clip;
+	private final boolean textAsText;
 
 	SvgGraphics2D(int width, int height) {
+		this(width, height, false);
+	}
+
+	/**
+	 * @param textAsText emit real {@code <text>} elements (compact, but needs generic sans/mono fonts on the
+	 *                   viewer) instead of outlining glyphs to paths (self-contained, but larger). Exports use
+	 *                   outlines for fidelity; documentation images use text for size.
+	 */
+	SvgGraphics2D(int width, int height, boolean textAsText) {
 		this.width = width;
 		this.height = height;
+		this.textAsText = textAsText;
 		this.body = new StringBuilder();
 		this.defs = new StringBuilder();
 		this.gradientId = new int[1];
@@ -75,6 +86,7 @@ final class SvgGraphics2D extends Graphics2D {
 	private SvgGraphics2D(SvgGraphics2D parent) {
 		this.width = parent.width;
 		this.height = parent.height;
+		this.textAsText = parent.textAsText;
 		this.body = parent.body;
 		this.defs = parent.defs;
 		this.gradientId = parent.gradientId;
@@ -99,6 +111,16 @@ final class SvgGraphics2D extends Graphics2D {
 		}
 		svg.append(body).append("</svg>\n");
 		return svg.toString();
+	}
+
+	/** The recorded {@code <defs>} and drawn elements, without the outer {@code <svg>} — for embedding under a
+	 *  custom (e.g. animated) viewBox. Coordinates are whatever transform was in force while drawing. */
+	String content() {
+		StringBuilder sb = new StringBuilder(body.length() + defs.length() + 24);
+		if (defs.length() > 0) {
+			sb.append("<defs>\n").append(defs).append("</defs>\n");
+		}
+		return sb.append(body).toString();
 	}
 
 	// ---- fills and strokes ---------------------------------------------------------------------------
@@ -127,8 +149,28 @@ final class SvgGraphics2D extends Graphics2D {
 		if (str == null || str.isEmpty()) {
 			return;
 		}
+		if (textAsText) {
+			Point2D p = transform.transform(new Point2D.Double(x, y), null);
+			double scale = Math.sqrt(Math.abs(transform.getDeterminant()));
+			double a = (composite instanceof AlphaComposite ac ? ac.getAlpha() : 1.0) * color.getAlpha() / 255.0;
+			body.append("<text x=\"").append(n(p.getX())).append("\" y=\"").append(n(p.getY()))
+					.append("\" font-family=\"").append(family()).append("\" font-size=\"")
+					.append(n(font.getSize2D() * scale)).append("\" font-weight=\"")
+					.append(font.isBold() ? "bold" : "normal").append("\" fill=\"").append(hex(color))
+					.append("\" fill-opacity=\"").append(n(a)).append("\">").append(escapeText(str))
+					.append("</text>\n");
+			return;
+		}
 		GlyphVector gv = font.createGlyphVector(FRC, str);
 		fill(gv.getOutline(x, y));
+	}
+
+	private String family() {
+		return font.getName().toLowerCase(java.util.Locale.ROOT).contains("mono") ? "monospace" : "sans-serif";
+	}
+
+	private static String escapeText(String s) {
+		return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
 	}
 
 	@Override
