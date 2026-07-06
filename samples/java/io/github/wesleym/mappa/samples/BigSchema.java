@@ -2,6 +2,7 @@ package io.github.wesleym.mappa.samples;
 
 import io.github.wesleym.mappa.Mappa;
 import io.github.wesleym.mappa.MappaMap;
+import io.github.wesleym.mappa.MappaMinimap;
 
 import javax.swing.SwingUtilities;
 
@@ -15,7 +16,9 @@ public final class BigSchema {
 	private BigSchema() { }
 
 	public static void main(String[] args) {
-		SwingUtilities.invokeLater(() -> Samples.show("Big schema", Mappa.view(platform()).component(), 1200, 820));
+		SwingUtilities.invokeLater(() -> Samples.show("Big schema", Mappa.view(platform())
+				.minimap(MappaMinimap.BOTTOM_RIGHT)   // AUTO already shows it here; a corner (or OFF) is your call
+				.component(), 1200, 820));
 	}
 
 	// Ten domains, each a densely-linked cluster of five tables, with a few sparse references bridging them.

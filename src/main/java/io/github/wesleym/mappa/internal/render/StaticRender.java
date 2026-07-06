@@ -4,6 +4,7 @@ import io.github.wesleym.mappa.MappaDetail;
 import io.github.wesleym.mappa.MappaEdges;
 import io.github.wesleym.mappa.MappaLayout;
 import io.github.wesleym.mappa.MappaMap;
+import io.github.wesleym.mappa.MappaMinimap;
 import io.github.wesleym.mappa.MappaOptions;
 import io.github.wesleym.mappa.MappaTheme;
 import io.github.wesleym.mappa.internal.layout.EdgeRouter;
@@ -169,13 +170,14 @@ public final class StaticRender {
 
 	/** Builds and configures the live interactive canvas for {@code map} — the {@code component()} entry point. */
 	public static JComponent live(MappaMap map, MappaOptions options, MappaTheme theme,
-			Consumer<MappaMap.Entity> onSelected, Consumer<MappaMap> onArranged) {
+			Consumer<MappaMap.Entity> onSelected, Consumer<MappaMap> onArranged, MappaMinimap minimap) {
 		MappaCanvas canvas = new MappaCanvas(theme);
 		canvas.setLayoutStyle(layoutStyle(map, options.layout()));
 		canvas.setEdgeStyle(edgeStyle(options.edges()));
 		canvas.setBackgroundStyle(backdrop(options.background()));
 		canvas.setKeysOnly(keysOnly(map, options.detail()));
 		canvas.setShowJoinColumns(options.relationshipLabels());
+		canvas.setMinimap(minimap);
 		Consumer<MappaMap.Entity> sink = onSelected == null ? e -> { } : onSelected;
 		canvas.setActiveHandler(name -> sink.accept(name == null ? null : entityByName(map, name)));
 		canvas.setArrangedHandler(onArranged);

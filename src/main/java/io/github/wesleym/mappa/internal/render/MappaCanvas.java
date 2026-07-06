@@ -16,6 +16,7 @@ import io.github.wesleym.mappa.internal.model.BoxMetrics;
 import io.github.wesleym.mappa.internal.model.EntityBox;
 import io.github.wesleym.mappa.internal.common.Style;
 import io.github.wesleym.mappa.MappaMap;
+import io.github.wesleym.mappa.MappaMinimap;
 import io.github.wesleym.mappa.MappaTheme;
 
 import javax.swing.JComponent;
@@ -157,6 +158,7 @@ final class MappaCanvas extends JComponent {
 	private double offsetX;
 	private double offsetY;
 	private boolean navigatingMinimap;   // the pointer is dragging inside the overview minimap
+	private MappaMinimap minimap = MappaMinimap.AUTO;
 	private final ScrollAxisLock axisLock = new ScrollAxisLock();   // keeps a zoom gesture from wobbling sideways
 	// Wheel-device stream, used ONLY to pick zoom smoothing (glide a notch, apply fractional deltas
 	// direct) — both branches zoom, so a misclassified high-resolution mouse wheel still behaves.
@@ -734,17 +736,35 @@ final class MappaCanvas extends JComponent {
 		}
 	}
 
-	// The minimap layout for the current scene, or null when the diagram is small enough not to need one.
+	/** Whether the minimap shows, and in which corner (OFF hides it; AUTO gates it on the diagram's size). */
+	void setMinimap(MappaMinimap minimap) {
+		this.minimap = minimap == null ? MappaMinimap.AUTO : minimap;
+		repaint();
+	}
+
+	// Whether the overview minimap is currently on screen — the visibility decision, exposed for tests.
+	boolean minimapVisible() {
+		return miniView() != null;
+	}
+
+	// The minimap layout for the current scene, placed in its configured corner, or null when it is off or
+	// (in AUTO) the diagram is small enough not to need one.
 	private MiniView miniView() {
-		if (scene == null || scene.tables().size() < MINIMAP_MIN_TABLES) {
+		if (scene == null || minimap == MappaMinimap.OFF) {
+			return null;
+		}
+		if (minimap == MappaMinimap.AUTO && scene.tables().size() < MINIMAP_MIN_TABLES) {
 			return null;
 		}
 		Rectangle2D world = scene.worldBounds();
 		if (world == null || world.getWidth() <= 0 || world.getHeight() <= 0) {
 			return null;
 		}
-		int px = getWidth() - MINIMAP_W - MINIMAP_MARGIN;
-		int py = getHeight() - MINIMAP_H - MINIMAP_MARGIN;
+		MappaMinimap corner = minimap == MappaMinimap.AUTO ? MappaMinimap.BOTTOM_RIGHT : minimap;
+		boolean left = corner == MappaMinimap.TOP_LEFT || corner == MappaMinimap.BOTTOM_LEFT;
+		boolean top = corner == MappaMinimap.TOP_LEFT || corner == MappaMinimap.TOP_RIGHT;
+		int px = left ? MINIMAP_MARGIN : getWidth() - MINIMAP_W - MINIMAP_MARGIN;
+		int py = top ? MINIMAP_MARGIN : getHeight() - MINIMAP_H - MINIMAP_MARGIN;
 		double ms = Math.min((MINIMAP_W - 2.0 * MINIMAP_PAD) / world.getWidth(),
 				(MINIMAP_H - 2.0 * MINIMAP_PAD) / world.getHeight());
 		double originX = px + (MINIMAP_W - world.getWidth() * ms) / 2;

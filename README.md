@@ -175,6 +175,8 @@ The live component carries the full interaction layer, all on by default:
   stays put (a detail or edge toggle no longer reshuffles it). `onArranged` hands you the positioned map to
   save; reopen it and the diagram returns exactly as you left it (see [Saved layouts](#saved-layouts)).
 - **Navigate** — large diagrams show an overview **minimap** in the corner; drag its frame to jump the view.
+  `view.minimap(MappaMinimap.TOP_LEFT)` moves it to any corner (and forces it on at any size), and
+  `MappaMinimap.OFF` hides it — for when the host draws its own chrome over the component.
 - **Spotlight** — click a box and the rest dims while its neighbours and edges stay lit, particles flow
   along its relationships, and the camera frames the neighbourhood. Click empty space to clear.
 - **Trace a join path** — shift-click a second box to light the shortest FK path between the two.
@@ -247,10 +249,11 @@ and nothing else:
 |---|---|
 | `Mappa` | The entry point: `schema`/`map` builders, `view`, and `read`/`write`. |
 | `MappaMap` | The immutable model — `Entity`, `Field`, `Relationship`, `EntityKind` — plus `focus`, `select`, saved `positions`/`withPositions`, `toBytes`, `write`. |
-| `MappaView` | Fluent view builder ending in `component()` (live), `image(w, h)` (PNG), `toSvg`/`writeSvg`, or `toInteractiveHtml`/`writeInteractiveHtml`; carries host `action`s, `onEntitySelected`, and `onArranged`. |
+| `MappaView` | Fluent view builder ending in `component()` (live), `image(w, h)` (PNG), `toSvg`/`writeSvg`, or `toInteractiveHtml`/`writeInteractiveHtml`; carries host `action`s, `onEntitySelected`, `onArranged`, and `minimap` placement. |
 | `MappaOptions` | The curated behaviour set as one immutable value, if you'd rather pass it around than chain. |
 | `MappaTheme` | Every colour as one immutable value; `light()`/`dark()` and fluent overrides. |
 | `MappaLayout` / `MappaEdges` / `MappaDetail` / `MappaBackground` | The four curated choices, as enums. |
+| `MappaMinimap` | Where the live view's overview minimap sits — `AUTO`, `OFF`, or a forced corner. |
 
 Each carries full Javadoc. The `internal` package — layout, rendering, hit-testing, the codec — is
 **not exported** and free to change between versions. If the public surface can't do something you need,

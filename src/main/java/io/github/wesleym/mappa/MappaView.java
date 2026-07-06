@@ -22,6 +22,7 @@ public final class MappaView {
 	private final List<EntityAction> actions = new ArrayList<>();
 	private Consumer<MappaMap.Entity> onEntitySelected = entity -> { };
 	private Consumer<MappaMap> onArranged = m -> { };
+	private MappaMinimap minimap = MappaMinimap.AUTO;
 
 	MappaView(MappaMap map) {
 		this.map = Objects.requireNonNull(map, "map");
@@ -80,9 +81,19 @@ public final class MappaView {
 		return this;
 	}
 
+	/**
+	 * Where the live view's overview minimap sits, or whether it shows at all. {@link MappaMinimap#AUTO}
+	 * (the default) shows it in the bottom-right once a diagram is large; a corner forces it there at any
+	 * size; {@link MappaMinimap#OFF} hides it — useful when the host draws its own chrome over the component.
+	 */
+	public MappaView minimap(MappaMinimap placement) {
+		this.minimap = placement == null ? MappaMinimap.AUTO : placement;
+		return this;
+	}
+
 	/** Returns a live Swing component with pan, zoom, drag, hover-spotlight, search, fit, and context actions. */
 	public JComponent component() {
-		return StaticRender.live(map, options, theme, onEntitySelected, onArranged);
+		return StaticRender.live(map, options, theme, onEntitySelected, onArranged, minimap);
 	}
 
 	/** Renders the full map to a new image. */
