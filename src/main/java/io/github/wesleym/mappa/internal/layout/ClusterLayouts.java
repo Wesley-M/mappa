@@ -120,10 +120,12 @@ final class ClusterLayouts {
 		return new LayeredLayout.Result(Arrays.asList(centres), emptyPaths(edges.size()));
 	}
 
+	private static final double FORCE_GRAVITY = 1.6;   // centroid pull; compacts the blob so it stays navigable
+
 	/**
 	 * A deterministic force-directed (Fruchterman–Reingold) relaxation: every pair of boxes repels, every edge
-	 * pulls its endpoints together, and the system cools over a fixed number of iterations. Seeded from a
-	 * golden-angle spiral (not randomness) so the result is reproducible.
+	 * pulls its endpoints together, a gentle gravity keeps the whole compact, and the system cools over a fixed
+	 * number of iterations. Seeded from a golden-angle spiral (not randomness) so the result is reproducible.
 	 */
 	static LayeredLayout.Result force(List<Box> boxes, List<Edge> edges, double gap) {
 		int n = boxes.size();
@@ -180,6 +182,21 @@ final class ClusterLayouts {
 				dy[e.from()] -= uy;
 				dx[e.to()] += ux;
 				dy[e.to()] += uy;
+			}
+			// Gravity: a gentle pull toward the centroid keeps the whole thing compact — repulsion still holds
+			// the ~k minimum spacing, so it packs into a tight organic blob instead of drifting into a sparse,
+			// hard-to-navigate scatter (and keeps disconnected pieces from wandering off).
+			double cx = 0;
+			double cy = 0;
+			for (int i = 0; i < n; i++) {
+				cx += px[i];
+				cy += py[i];
+			}
+			cx /= n;
+			cy /= n;
+			for (int i = 0; i < n; i++) {
+				dx[i] += (cx - px[i]) * FORCE_GRAVITY;
+				dy[i] += (cy - py[i]) * FORCE_GRAVITY;
 			}
 			// Step each node along its net force, capped by the current temperature, then cool.
 			for (int i = 0; i < n; i++) {
