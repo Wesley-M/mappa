@@ -649,6 +649,35 @@ final class SceneRenderer {
 		return scene.tables().size() > LOD_MIN_TABLES ? g2.getTransform().getScaleX() : Double.MAX_VALUE;
 	}
 
+	/**
+	 * A cheap low-geometry pass: each box as its surface rounded-rect, header strip, and hairline only — no
+	 * glow, shadow, text, or columns. Painted under the detailed buffer so a box panned or zoomed into view
+	 * shows its structure straight away instead of popping in from nothing; the buffer covers it where baked,
+	 * and the settle re-bake resolves it to full detail. Only boxes intersecting {@code clip} are drawn.
+	 */
+	void drawSilhouettes(Graphics2D g2, Scene scene, Rectangle2D clip) {
+		Stroke prevStroke = g2.getStroke();
+		g2.setStroke(new BasicStroke(1f));
+		for (EntityBox table : scene.tables()) {
+			Rectangle2D r = table.bounds();
+			if (clip != null && !clip.intersects(r)) {
+				continue;
+			}
+			int x = (int) r.getX();
+			int y = (int) r.getY();
+			int w = (int) r.getWidth();
+			int h = (int) r.getHeight();
+			g2.setColor(theme.surface());
+			g2.fillRoundRect(x, y, w, h, BoxMetrics.CORNER, BoxMetrics.CORNER);
+			g2.setColor(table.isView() ? theme.viewHeader() : theme.entityHeader());
+			g2.fillRoundRect(x, y, w, BoxMetrics.HEADER_HEIGHT, BoxMetrics.CORNER, BoxMetrics.CORNER);
+			g2.fillRect(x, y + BoxMetrics.HEADER_HEIGHT - BoxMetrics.CORNER, w, BoxMetrics.CORNER);
+			g2.setColor(theme.line());
+			g2.drawRoundRect(x, y, w, h, BoxMetrics.CORNER, BoxMetrics.CORNER);
+		}
+		g2.setStroke(prevStroke);
+	}
+
 	private void paintTable(Graphics2D g2, EntityBox table, boolean active, EntityBox hovered, String focus,
 			double zoom) {
 		Rectangle2D r = table.bounds();

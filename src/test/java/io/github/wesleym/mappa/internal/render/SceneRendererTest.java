@@ -18,6 +18,7 @@ import javax.imageio.ImageIO;
 
 import java.awt.Font;
 import java.awt.Graphics2D;
+import java.awt.Color;
 import java.awt.RenderingHints;
 import java.awt.geom.Path2D;
 import java.awt.geom.Rectangle2D;
@@ -28,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SceneRendererTest {
@@ -98,6 +100,48 @@ class SceneRendererTest {
 						null, null, -1, true, null));
 			}
 		}
+	}
+
+	// The low-geometry placeholder pass: box bodies and header strips only, no text or columns. Renders a
+	// PNG (full detail beside the silhouettes) for a look, and asserts the pass draws structure.
+	@Test
+	void drawsLowGeometrySilhouettes() throws Exception {
+		MappaTheme theme = MappaTheme.light();
+		Prepared p = prepare(scene(commerce(), false));
+		Rectangle2D world = p.scene().worldBounds();
+		int w = 1300;
+		int h = (int) (world.getHeight() + 160);
+		BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+		Graphics2D g = img.createGraphics();
+		g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+		g.setColor(theme.background());
+		g.fillRect(0, 0, w, h);
+		SceneRenderer renderer = new SceneRenderer(theme, TITLE, ROW);
+
+		Graphics2D left = (Graphics2D) g.create();
+		left.translate(60 - world.getX(), 80 - world.getY());
+		renderer.draw(left, p.scene(), p.geometry(), p.paths(), p.labels(), null, null, -1, false, null);
+		left.dispose();
+
+		Graphics2D right = (Graphics2D) g.create();
+		right.translate(60 - world.getX() + world.getWidth() + 120, 80 - world.getY());
+		assertDoesNotThrow(() -> renderer.drawSilhouettes(right, p.scene(), null));
+		right.dispose();
+		g.dispose();
+
+		java.io.File out = new java.io.File("build");
+		out.mkdirs();
+		ImageIO.write(img, "png", new java.io.File(out, "silhouettes.png"));
+
+		// A clip that excludes every box yields an empty pass — a pre-filled pixel stays untouched.
+		int sentinel = 0xFF00FF00;
+		BufferedImage blank = new BufferedImage(50, 50, BufferedImage.TYPE_INT_RGB);
+		Graphics2D bg = blank.createGraphics();
+		bg.setColor(new Color(sentinel));
+		bg.fillRect(0, 0, 50, 50);
+		renderer.drawSilhouettes(bg, p.scene(), new Rectangle2D.Double(-9999, -9999, 1, 1));
+		bg.dispose();
+		assertEquals(sentinel, blank.getRGB(25, 25), "a non-intersecting clip draws nothing");
 	}
 
 	@Test

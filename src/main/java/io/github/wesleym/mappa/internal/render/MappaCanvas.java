@@ -159,6 +159,10 @@ final class MappaCanvas extends JComponent {
 	private double offsetY;
 	private boolean navigatingMinimap;   // the pointer is dragging inside the overview minimap
 	private MappaMinimap minimap = MappaMinimap.AUTO;
+	private static final double FOLLOW_EASE = 0.20;   // per-frame glide toward a minimap target — cinematic, not a snap
+	private double followTargetX;
+	private double followTargetY;
+	private final Timer cameraFollow = new Timer(16, e -> stepCameraFollow());
 	private final ScrollAxisLock axisLock = new ScrollAxisLock();   // keeps a zoom gesture from wobbling sideways
 	// Wheel-device stream, used ONLY to pick zoom smoothing (glide a notch, apply fractional deltas
 	// direct) — both branches zoom, so a misclassified high-resolution mouse wheel still behaves.
@@ -681,6 +685,19 @@ final class MappaCanvas extends JComponent {
 		double ty = dpr * offsetY - f * dpr * (m + bufferPanY);
 		g.setColor(theme.background());
 		g.fillRect(0, 0, getWidth(), getHeight());
+
+		// Low-geometry placeholders beneath the detailed buffer: where the buffer doesn't reach (a fast pan or
+		// zoom-out exposes its margin), boxes still show their structure instead of appearing from nothing. The
+		// opaque buffer covers them where it's baked; the settle re-bake resolves them to full detail.
+		if (scene != null && !LightweightMode.isOn()) {
+			Graphics2D sil = (Graphics2D) g.create();
+			sil.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+			sil.translate(offsetX, offsetY);
+			sil.scale(scale, scale);
+			renderer.drawSilhouettes(sil, scene, visibleWorld(48));
+			sil.dispose();
+		}
+
 		Graphics2D blit = (Graphics2D) g.create();
 		blit.setTransform(new AffineTransform());
 		if (f != 1.0) {
@@ -806,12 +823,39 @@ final class MappaCanvas extends JComponent {
 		g2.dispose();
 	}
 
-	// Recenters the main view on the world point under a minimap click/drag.
+	// Aims the camera at the world point under a minimap click/drag — the follow tween glides there, so the
+	// outside diagram moves cinematically instead of snapping frame to frame.
 	private void navigateFromMinimap(Point at, MiniView mv) {
 		double worldX = mv.toWorldX(at.x);
 		double worldY = mv.toWorldY(at.y);
-		offsetX = getWidth() / 2.0 - scale * worldX;
-		offsetY = getHeight() / 2.0 - scale * worldY;
+		followCameraTo(getWidth() / 2.0 - scale * worldX, getHeight() / 2.0 - scale * worldY);
+	}
+
+	// Cinematic pan: ease the viewport toward a target offset each frame rather than jumping to it.
+	private void followCameraTo(double targetX, double targetY) {
+		followTargetX = targetX;
+		followTargetY = targetY;
+		if (!cameraFollow.isRunning()) {
+			cameraFollow.start();
+		}
+	}
+
+	private void stepCameraFollow() {
+		double dx = followTargetX - offsetX;
+		double dy = followTargetY - offsetY;
+		// While the pointer still holds the minimap the target keeps moving, so glide on; once it lets go and
+		// we're all but there, land exactly and re-bake the buffer crisp at the final position.
+		if (!navigatingMinimap && Math.hypot(dx, dy) < 0.5) {
+			offsetX = followTargetX;
+			offsetY = followTargetY;
+			cameraFollow.stop();
+			bufferDirty = true;
+			repaint();
+			onViewChanged.run();
+			return;
+		}
+		offsetX += dx * FOLLOW_EASE;
+		offsetY += dy * FOLLOW_EASE;
 		repaint();
 		onViewChanged.run();
 	}
@@ -1380,6 +1424,7 @@ final class MappaCanvas extends JComponent {
 			navigateFromMinimap(e.getPoint(), mini);
 			return;
 		}
+		cameraFollow.stop();   // a press on the canvas cancels an in-flight minimap glide
 		pressPoint = e.getPoint();
 		Point2D world = toWorld(e.getPoint());
 		if (showJoinColumns) {
@@ -1447,9 +1492,7 @@ final class MappaCanvas extends JComponent {
 	// Release: finish a label/table drag, or — if it was a click — select / trace-path / clear.
 	private void onMouseReleased(MouseEvent e) {
 		if (navigatingMinimap) {
-			navigatingMinimap = false;
-			bufferDirty = true;   // re-bake the scene crisp at the jumped-to position
-			repaint();
+			navigatingMinimap = false;   // the follow tween glides to the target, then settles and re-bakes
 			return;
 		}
 		if (draggingLabel >= 0) {
@@ -1811,6 +1854,7 @@ final class MappaCanvas extends JComponent {
 
 	/** Sets the scale to {@code nextScale} while keeping the world point under {@code pivot} fixed on screen. */
 	private void zoomTo(Point pivot, double nextScale) {
+		cameraFollow.stop();   // a manual zoom takes over from an in-flight minimap glide
 		double next = clampScale(nextScale);
 		double applied = next / scale;
 		offsetX = pivot.x - (pivot.x - offsetX) * applied;
@@ -1968,6 +2012,7 @@ final class MappaCanvas extends JComponent {
 		armResize.stop();
 		placeholderFade.stop();
 		zoomGlide.stop();
+		cameraFollow.stop();
 		if (cameraTimer != null) {
 			cameraTimer.stop();
 		}
