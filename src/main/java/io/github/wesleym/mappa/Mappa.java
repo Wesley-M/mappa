@@ -1,6 +1,7 @@
 package io.github.wesleym.mappa;
 
 import io.github.wesleym.mappa.internal.MappaCodec;
+import io.github.wesleym.mappa.internal.common.LightweightMode;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -30,6 +31,22 @@ public final class Mappa {
 	/** Creates a Swing view builder for {@code map}. */
 	public static MappaView view(MappaMap map) {
 		return new MappaView(map);
+	}
+
+	/**
+	 * Turns lightweight mode on or off for every live view at once. When on, the interactive canvas drops
+	 * everything decorative — entry and edge-flow animation, shadows, glows, community regions — and lays out
+	 * on a plain grid, to stay fast on a low-resource machine or a huge schema. It's a global runtime switch
+	 * (the drawing code reads it deep in paint and animation loops), so a host with its own low-power mode can
+	 * mirror it here in one call and every open diagram reconfigures instantly.
+	 */
+	public static void setLightweight(boolean lightweight) {
+		LightweightMode.set(lightweight);
+	}
+
+	/** Whether {@link #setLightweight lightweight mode} is currently on. */
+	public static boolean isLightweight() {
+		return LightweightMode.isOn();
 	}
 
 	/** Reads a native {@code .mappa} document from disk. */

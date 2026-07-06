@@ -308,6 +308,11 @@ final class MappaCanvas extends JComponent {
 		rebuildScene(true);
 	}
 
+	/** The map currently shown — lets the view resolve AUTO options (detail, layout) against its size. */
+	MappaMap map() {
+		return graph;
+	}
+
 	// The map keeping only its suggested (inferred) relationships — declared ones dropped for "only inferred".
 	private static MappaMap suggestedOnly(MappaMap map) {
 		return new MappaMap(map.title(), map.entities(),
@@ -321,7 +326,10 @@ final class MappaCanvas extends JComponent {
 		}
 		showJoinColumns = show;
 		if (graph != null) {
-			rebuildScene(false);   // the layer gap changes, so re-run the layout (view is kept, no refit)
+			// The layer gap changes, so the layout must actually re-run. A hand-arrangement (saved box centres)
+			// would otherwise pin the boxes and skip the layout entirely, defeating the toggle — so drop it.
+			graph = graph.withPositions(java.util.Map.of());
+			rebuildScene(false);
 		}
 	}
 
@@ -333,6 +341,9 @@ final class MappaCanvas extends JComponent {
 		}
 		this.keysOnly = keysOnly;
 		if (graph != null) {
+			// Box heights change wholesale, so a hand-arrangement no longer fits — replaying its saved centres
+			// would overlap the resized boxes and skip the community regions. Drop it and re-lay-out cleanly.
+			graph = graph.withPositions(java.util.Map.of());
 			rebuildScene(false);
 		}
 	}
@@ -1816,7 +1827,8 @@ final class MappaCanvas extends JComponent {
 	// cap we leave the timer stopped — the edges still light up (drawn statically), just without the flow.
 	private void updateFlowTimer() {
 		int litEdges = (active != null ? edgesTouching(active).size() : 0) + pathEdges.size();
-		boolean wantFlow = !LightweightMode.isOn()   // lightweight: no flowing-edge animation at all
+		boolean wantFlow = animating   // a host can pause the decorative flow (e.g. while its tab is hidden)
+				&& !LightweightMode.isOn()   // lightweight: no flowing-edge animation at all
 				&& (active != null || !pathEdges.isEmpty())
 				&& litEdges <= SceneRenderer.MAX_FLOW_EDGES;
 		if (wantFlow) {
@@ -1842,6 +1854,17 @@ final class MappaCanvas extends JComponent {
 
 	private Point2D.Double toWorld(Point screen) {
 		return new Point2D.Double((screen.x - offsetX) / scale, (screen.y - offsetY) / scale);
+	}
+
+	// A host can pause the decorative edge-flow animation (e.g. while the diagram's tab is off-screen) without
+	// tearing down the component. The spotlight/dim state is untouched; only the particle ticker stops.
+	private boolean animating = true;
+
+	void setAnimating(boolean value) {
+		if (animating != value) {
+			animating = value;
+			updateFlowTimer();
+		}
 	}
 
 	void zoomIn() {

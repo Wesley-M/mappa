@@ -247,9 +247,10 @@ and nothing else:
 
 | Type | What it's for |
 |---|---|
-| `Mappa` | The entry point: `schema`/`map` builders, `view`, and `read`/`write`. |
+| `Mappa` | The entry point: `schema`/`map` builders, `view`, `read`/`write`, and the global `setLightweight`. |
 | `MappaMap` | The immutable model — `Entity`, `Field`, `Relationship`, `EntityKind` — plus `focus`, `select`, saved `positions`/`withPositions`, `toBytes`, `write`. |
-| `MappaView` | Fluent view builder ending in `component()` (live), `image(w, h)` (PNG), `toSvg`/`writeSvg`, or `toInteractiveHtml`/`writeInteractiveHtml`; carries host `action`s, `onEntitySelected`, `onArranged`, and `minimap` placement. |
+| `MappaView` | Fluent view builder ending in `component()` (live), `image(w, h[, transparent])` (PNG), `toSvg`/`writeSvg`, or `toInteractiveHtml`/`writeInteractiveHtml`; carries host `action`s, `onEntitySelected`, `onArranged`, and `minimap` placement. |
+| `MappaComponent` | The live component `component()` returns — a `JComponent` for hosts that draw their own chrome: `zoomIn`/`zoomOut`/`fitView`, `setAnimating`, live `setMap`/`setLayout`/`setEdges`/`setDetail`/`setBackground`/`setRelationshipLabels`/`setInferredOnly` (re-flow in place, no rebuild), and `reveal(name)` (find + spotlight, to wire a host search box). |
 | `MappaOptions` | The curated behaviour set as one immutable value, if you'd rather pass it around than chain. |
 | `MappaTheme` | Every colour as one immutable value; `light()`/`dark()` and fluent overrides. |
 | `MappaLayout` / `MappaEdges` / `MappaDetail` / `MappaBackground` | The four curated choices, as enums. |

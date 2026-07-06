@@ -91,17 +91,25 @@ public final class MappaView {
 		return this;
 	}
 
-	/** Returns a live Swing component with pan, zoom, drag, hover-spotlight, search, fit, and context actions. */
-	public JComponent component() {
-		return StaticRender.live(map, options, theme, onEntitySelected, onArranged, minimap);
+	/**
+	 * Returns a live Swing component with pan, zoom, drag, hover-spotlight, search, fit, and context actions,
+	 * plus host-drivable {@link MappaComponent#zoomIn}/{@code zoomOut}/{@code fitView}/{@code setAnimating}.
+	 */
+	public MappaComponent component() {
+		return new MappaComponent(StaticRender.live(map, options, theme, onEntitySelected, onArranged, minimap));
 	}
 
-	/** Renders the full map to a new image. */
+	/** Renders the full map to a new image over the theme background. */
 	public BufferedImage image(int width, int height) {
+		return image(width, height, false);
+	}
+
+	/** Renders the full map to a new image; {@code transparent} omits the background so it keeps an alpha channel. */
+	public BufferedImage image(int width, int height, boolean transparent) {
 		BufferedImage image = new BufferedImage(Math.max(1, width), Math.max(1, height), BufferedImage.TYPE_INT_ARGB);
 		Graphics2D g = image.createGraphics();
 		try {
-			renderTo(g, image.getWidth(), image.getHeight());
+			renderTo(g, image.getWidth(), image.getHeight(), transparent);
 		}
 		finally {
 			g.dispose();
@@ -109,9 +117,14 @@ public final class MappaView {
 		return image;
 	}
 
-	/** Renders the full map into any {@link Graphics2D}. */
+	/** Renders the full map into any {@link Graphics2D} over the theme background. */
 	public void renderTo(Graphics2D g, int width, int height) {
-		StaticRender.render(g, map, options, theme, width, height);
+		renderTo(g, width, height, false);
+	}
+
+	/** Renders the full map into any {@link Graphics2D}; {@code transparent} omits the background fill. */
+	public void renderTo(Graphics2D g, int width, int height, boolean transparent) {
+		StaticRender.render(g, map, options, theme, width, height, transparent);
 	}
 
 	/** Renders the full map to a standalone SVG document (glyphs outlined, so it needs no fonts to view). */

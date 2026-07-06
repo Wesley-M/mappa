@@ -49,10 +49,18 @@ public final class StaticRender {
 
 	public static void render(Graphics2D g, MappaMap map, MappaOptions options, MappaTheme theme, int width,
 			int height) {
+		render(g, map, options, theme, width, height, false);
+	}
+
+	/** Renders the full map; {@code transparent} omits the background fill so the map floats on the canvas alpha. */
+	public static void render(Graphics2D g, MappaMap map, MappaOptions options, MappaTheme theme, int width,
+			int height, boolean transparent) {
 		g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 		g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-		g.setColor(theme.background());
-		g.fillRect(0, 0, width, height);
+		if (!transparent) {
+			g.setColor(theme.background());
+			g.fillRect(0, 0, width, height);
+		}
 
 		SceneBuilder.TextWidth textWidth = (t, f) -> g.getFontMetrics(f).stringWidth(t);
 		boolean labels = options.relationshipLabels();
@@ -183,6 +191,61 @@ public final class StaticRender {
 		canvas.setArrangedHandler(onArranged);
 		canvas.setMap(map);
 		return canvas;
+	}
+
+	// Viewport controls for the public MappaComponent facade — it holds the live canvas as a bare JComponent
+	// (the canvas type stays package-private), so these drive it. Only ever passed the canvas from live().
+	public static void zoomIn(JComponent liveCanvas) {
+		((MappaCanvas) liveCanvas).zoomIn();
+	}
+
+	public static void zoomOut(JComponent liveCanvas) {
+		((MappaCanvas) liveCanvas).zoomOut();
+	}
+
+	public static void fitView(JComponent liveCanvas) {
+		((MappaCanvas) liveCanvas).fitToView();
+	}
+
+	public static void setAnimating(JComponent liveCanvas, boolean animating) {
+		((MappaCanvas) liveCanvas).setAnimating(animating);
+	}
+
+	// Live option changes for the MappaComponent facade — applied to the running canvas without a rebuild, so the
+	// diagram re-flows in place (and keeps its viewport where it can). AUTO options resolve against the live map.
+	public static void setMap(JComponent liveCanvas, MappaMap map) {
+		((MappaCanvas) liveCanvas).setMap(map);
+	}
+
+	public static void setLayout(JComponent liveCanvas, MappaLayout layout) {
+		MappaCanvas canvas = (MappaCanvas) liveCanvas;
+		canvas.setLayoutStyle(layoutStyle(canvas.map(), layout));
+	}
+
+	public static void setEdges(JComponent liveCanvas, MappaEdges edges) {
+		((MappaCanvas) liveCanvas).setEdgeStyle(edgeStyle(edges));
+	}
+
+	public static void setDetail(JComponent liveCanvas, MappaDetail detail) {
+		MappaCanvas canvas = (MappaCanvas) liveCanvas;
+		canvas.setKeysOnly(keysOnly(canvas.map(), detail));
+	}
+
+	public static void setBackground(JComponent liveCanvas, MappaBackground background) {
+		((MappaCanvas) liveCanvas).setBackgroundStyle(backdrop(background));
+	}
+
+	public static void setRelationshipLabels(JComponent liveCanvas, boolean show) {
+		((MappaCanvas) liveCanvas).setShowJoinColumns(show);
+	}
+
+	public static void setInferredOnly(JComponent liveCanvas, boolean inferredOnly) {
+		((MappaCanvas) liveCanvas).setInferredOnly(inferredOnly);
+	}
+
+	/** Finds an entity by name and spotlights it (select + frame + highlight); returns whether one matched. */
+	public static boolean reveal(JComponent liveCanvas, String query) {
+		return ((MappaCanvas) liveCanvas).revealTable(query);
 	}
 
 	private static MappaMap.Entity entityByName(MappaMap map, String name) {
