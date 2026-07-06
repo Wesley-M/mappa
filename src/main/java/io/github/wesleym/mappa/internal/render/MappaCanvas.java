@@ -148,7 +148,12 @@ final class MappaCanvas extends JComponent {
 	private double bufferPanY;
 	private double bufferScale;
 	private double bufferDpr;
-	private static final int BUFFER_MARGIN = 256;   // logical-px halo around the viewport rendered into the buffer
+	private int bufferMargin;   // the halo the current buffer was baked with — how far a pan can drift before a re-bake
+	// Re-bake proactively once a pan/move has drifted this fraction of the baked halo — so fresh detail keeps
+	// arriving mid-motion instead of only on settle, at the cost of more (culled, parallel) re-bakes.
+	private static final double REBAKE_DRIFT_FRACTION = 0.5;
+	private static final int BUFFER_MARGIN = 256;   // floor for the logical-px halo baked around the viewport
+	private static final int BUFFER_MARGIN_MAX = 720;   // cap so a maximised window doesn't allocate an enormous buffer
 	private Backdrop background = Backdrop.DOTS;   // backdrop pattern behind the diagram
 	private BufferedImage gridTile;       // cached one-cell tile for the backdrop TexturePaint
 	private Backdrop gridTileStyle;   // pattern the tile was built for, so it rebuilds on a switch
@@ -661,7 +666,10 @@ final class MappaCanvas extends JComponent {
 		// just blit the cached pixels shifted (no re-render) until it drifts past the margin or settles —
 		// the heavy redraw happens on a real change (zoom, select, drag, or pan-settle), not every pan frame.
 		double dpr = Math.max(((Graphics2D) g).getTransform().getScaleX(), 1.0);
-		int m = BUFFER_MARGIN;
+		// A halo of extra scene baked around the viewport, so a pan or zoom-out reaches detail well past the
+		// edge before it falls back to the low-geometry pass — sized to the viewport (bigger window, bigger
+		// reach) and capped. The rasterisation is culled and banded across cores, so a wide halo stays cheap.
+		int m = Math.max(BUFFER_MARGIN, Math.min(BUFFER_MARGIN_MAX, (int) (Math.min(getWidth(), getHeight()) * 0.6)));
 		int bw = Math.max(1, (int) Math.round((getWidth() + 2 * m) * dpr));
 		int bh = Math.max(1, (int) Math.round((getHeight() + 2 * m) * dpr));
 		// Blit the cached buffer when it's clean and still matches the viewport (pan/zoom shift+scale it for
@@ -843,9 +851,10 @@ final class MappaCanvas extends JComponent {
 	private void stepCameraFollow() {
 		double dx = followTargetX - offsetX;
 		double dy = followTargetY - offsetY;
-		// While the pointer still holds the minimap the target keeps moving, so glide on; once it lets go and
-		// we're all but there, land exactly and re-bake the buffer crisp at the final position.
-		if (!navigatingMinimap && Math.hypot(dx, dy) < 0.5) {
+		// Whenever the camera catches up to the target — even while the pointer still holds the minimap — land
+		// exactly and re-bake the buffer crisp there, so detail keeps arriving as you drag and pause, not only
+		// once you let go. A fast continuous drag keeps the target ahead, so it stays a cheap shifted blit.
+		if (Math.hypot(dx, dy) < 0.5) {
 			offsetX = followTargetX;
 			offsetY = followTargetY;
 			cameraFollow.stop();
@@ -856,6 +865,9 @@ final class MappaCanvas extends JComponent {
 		}
 		offsetX += dx * FOLLOW_EASE;
 		offsetY += dy * FOLLOW_EASE;
+		if (driftNeedsRebake()) {
+			bufferDirty = true;   // keep detail arriving during a long glide, not only where it lands
+		}
 		repaint();
 		onViewChanged.run();
 	}
@@ -951,7 +963,15 @@ final class MappaCanvas extends JComponent {
 		bufferPanY = offsetY;
 		bufferScale = scale;
 		bufferDpr = dpr;
+		bufferMargin = margin;
 		bufferDirty = false;
+	}
+
+	// True once a pan/move has drifted far enough from where the buffer was baked that its detailed halo is
+	// running out — a cue to re-bake now rather than wait for motion to stop.
+	private boolean driftNeedsRebake() {
+		return !bufferDirty
+				&& Math.hypot(offsetX - bufferPanX, offsetY - bufferPanY) > bufferMargin * REBAKE_DRIFT_FRACTION;
 	}
 
 	// How many bands to split the re-bake into: one for small schemas, otherwise scaled by cores and by the
@@ -1481,8 +1501,12 @@ final class MappaCanvas extends JComponent {
 			offsetX += e.getX() - lastDragPoint.x;
 			offsetY += e.getY() - lastDragPoint.y;
 			lastDragPoint = e.getPoint();
-			// No mid-pan rebuild: paintComponent re-blits the cached buffer shifted (even past the
-			// margin, with a backdrop fringe), and the settle timer re-bakes it crisp once the pan stops.
+			// Blit the cached buffer shifted for instant feedback, but re-bake mid-pan once we've drifted far
+			// enough that its detailed halo is thinning — so detail keeps up during a long drag, not only when it
+			// stops. The settle timer still does the final crisp bake at rest.
+			if (driftNeedsRebake()) {
+				bufferDirty = true;
+			}
 			viewSettle.restart();
 			repaint();
 			onViewChanged.run();

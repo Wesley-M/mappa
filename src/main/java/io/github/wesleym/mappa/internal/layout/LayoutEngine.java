@@ -85,7 +85,7 @@ public final class LayoutEngine {
 				clusterOf[global] = ci;
 			}
 		}
-		placeClusters(clusters, edges, clusterOf);
+		placeClusters(clusters, edges, clusterOf, style);
 		for (Cluster cluster : clusters) {
 			cluster.writeInto(centres, edgePaths);
 		}
@@ -194,7 +194,8 @@ public final class LayoutEngine {
 	 * algorithm one level up — so strongly-linked communities end up adjacent and their bridges stay short
 	 * instead of slicing across the picture. Clusters with no bridges between them just shelf-pack.
 	 */
-	private static void placeClusters(List<Cluster> clusters, List<Edge> edges, Integer[] clusterOf) {
+	private static void placeClusters(List<Cluster> clusters, List<Edge> edges, Integer[] clusterOf,
+			LayoutStyle style) {
 		if (clusters.size() <= 1) {
 			if (!clusters.isEmpty()) {
 				clusters.get(0).offsetX = 0;
@@ -219,7 +220,9 @@ public final class LayoutEngine {
 		for (Cluster c : clusters) {
 			clusterBoxes.add(new Box(c.width + CLUSTER_PAD, c.height + CLUSTER_PAD));
 		}
-		Result placement = layout(clusterBoxes, clusterEdges);   // lay out the cluster graph (terminates: it shrinks)
+		// Lay the cluster meta-graph out in the same style as the diagram, so FORCE/RADIAL/GRID spread the
+		// communities organically to all sides instead of a LAYERED stack (terminates: the meta-graph shrinks).
+		Result placement = layout(clusterBoxes, clusterEdges, LayeredLayout.LAYER_GAP, style);
 		for (int ci = 0; ci < clusters.size(); ci++) {
 			Point2D.Double centre = placement.centres().get(ci);
 			Cluster cluster = clusters.get(ci);
