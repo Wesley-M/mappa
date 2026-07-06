@@ -148,19 +148,6 @@ final class MappaCanvas extends JComponent {
 	private double bufferPanY;
 	private double bufferScale;
 	private double bufferDpr;
-	private int bufferMargin;   // the halo the current buffer was baked with — how far a pan can drift before a re-bake
-	// Re-bake proactively once a pan/move has drifted this fraction of the baked halo — so fresh detail keeps
-	// arriving mid-motion instead of only on settle, at the cost of more (culled, parallel) re-bakes.
-	private static final double REBAKE_DRIFT_FRACTION = 0.5;
-	// A mid-motion re-bake is centred ahead of the viewport, along the pan velocity, so that by the time the
-	// (synchronous) bake lands the motion has moved into the freshly-baked region rather than past it — which
-	// is what made a mid-pan re-bake feel like it lagged behind. Lead = smoothed velocity × frames, capped so
-	// the current viewport always stays inside the baked halo.
-	private double panVelX;   // smoothed pan velocity, logical px per frame
-	private double panVelY;
-	private static final double PAN_VEL_SMOOTH = 0.6;
-	private static final double LEAD_FRAMES = 9;
-	private static final double LEAD_MARGIN_FRACTION = 0.4;   // never lead more than this much of the halo
 	private static final int BUFFER_MARGIN = 256;   // floor for the logical-px halo baked around the viewport
 	private static final int BUFFER_MARGIN_MAX = 720;   // cap so a maximised window doesn't allocate an enormous buffer
 	private Backdrop background = Backdrop.DOTS;   // backdrop pattern behind the diagram
@@ -221,7 +208,6 @@ final class MappaCanvas extends JComponent {
 	// Coalesces rapid pan/zoom into one crisp re-bake: while panning/zooming we blit the cached buffer
 	// transformed (instant), and only re-render the scene once motion has paused for a beat.
 	private final Timer viewSettle = new Timer(110, e -> {
-		clearPanVelocity();   // motion has stopped — the final bake is centred exactly, with no lead
 		bufferDirty = true;   // re-bake crisp once a pan/zoom stops; the blit shows the moved view until then
 		repaint();
 	});
@@ -688,7 +674,7 @@ final class MappaCanvas extends JComponent {
 		boolean canBlit = !bufferDirty && buffer != null
 				&& buffer.getWidth() == bw && buffer.getHeight() == bh && dpr == bufferDpr;
 		if (!canBlit) {
-			rebuildBufferLeadingMotion(dpr, bw, bh, m);
+			rebuildBuffer(dpr, bw, bh, m);
 		}
 		if (!resizeArmed && !armScheduled) {
 			armScheduled = true;
@@ -868,20 +854,13 @@ final class MappaCanvas extends JComponent {
 			offsetX = followTargetX;
 			offsetY = followTargetY;
 			cameraFollow.stop();
-			clearPanVelocity();   // landed — bake exactly here, no lead
-			bufferDirty = true;
+			bufferDirty = true;   // landed — re-bake crisp here
 			repaint();
 			onViewChanged.run();
 			return;
 		}
-		double sx = dx * FOLLOW_EASE;
-		double sy = dy * FOLLOW_EASE;
-		offsetX += sx;
-		offsetY += sy;
-		recordPanVelocity(sx, sy);
-		if (driftNeedsRebake()) {
-			bufferDirty = true;   // keep detail arriving during a long glide, not only where it lands
-		}
+		offsetX += dx * FOLLOW_EASE;
+		offsetY += dy * FOLLOW_EASE;
 		repaint();
 		onViewChanged.run();
 	}
@@ -977,46 +956,7 @@ final class MappaCanvas extends JComponent {
 		bufferPanY = offsetY;
 		bufferScale = scale;
 		bufferDpr = dpr;
-		bufferMargin = margin;
 		bufferDirty = false;
-	}
-
-	// True once a pan/move has drifted far enough from where the buffer was baked that its detailed halo is
-	// running out — a cue to re-bake now rather than wait for motion to stop.
-	private boolean driftNeedsRebake() {
-		return !bufferDirty
-				&& Math.hypot(offsetX - bufferPanX, offsetY - bufferPanY) > bufferMargin * REBAKE_DRIFT_FRACTION;
-	}
-
-	// Feeds one motion step into the smoothed pan velocity (logical px per frame), so a mid-motion re-bake can
-	// aim ahead of where the viewport is now.
-	private void recordPanVelocity(double dx, double dy) {
-		panVelX = PAN_VEL_SMOOTH * panVelX + (1 - PAN_VEL_SMOOTH) * dx;
-		panVelY = PAN_VEL_SMOOTH * panVelY + (1 - PAN_VEL_SMOOTH) * dy;
-	}
-
-	private void clearPanVelocity() {
-		panVelX = 0;
-		panVelY = 0;
-	}
-
-	// Bakes the buffer, but centred a step ahead along the current pan velocity (clamped inside the halo) so a
-	// re-bake made while moving lands where the viewport is heading, not where it was.
-	private void rebuildBufferLeadingMotion(double dpr, int bw, int bh, int margin) {
-		double cap = margin * LEAD_MARGIN_FRACTION;
-		double leadX = Math.max(-cap, Math.min(cap, panVelX * LEAD_FRAMES));
-		double leadY = Math.max(-cap, Math.min(cap, panVelY * LEAD_FRAMES));
-		if (leadX == 0 && leadY == 0) {
-			rebuildBuffer(dpr, bw, bh, margin);
-			return;
-		}
-		double realX = offsetX;
-		double realY = offsetY;
-		offsetX += leadX;   // bake as if the viewport were already a step ahead; bufferPan records that centre
-		offsetY += leadY;
-		rebuildBuffer(dpr, bw, bh, margin);
-		offsetX = realX;    // restore for the blit, which shifts the ahead-baked buffer back to the true position
-		offsetY = realY;
 	}
 
 	// How many bands to split the re-bake into: one for small schemas, otherwise scaled by cores and by the
@@ -1490,7 +1430,6 @@ final class MappaCanvas extends JComponent {
 			return;
 		}
 		cameraFollow.stop();   // a press on the canvas cancels an in-flight minimap glide
-		clearPanVelocity();
 		pressPoint = e.getPoint();
 		Point2D world = toWorld(e.getPoint());
 		if (showJoinColumns) {
@@ -1544,18 +1483,11 @@ final class MappaCanvas extends JComponent {
 			onViewChanged.run();    // a dragged table carries its note along
 		}
 		else if (lastDragPoint != null) {
-			double dx = e.getX() - lastDragPoint.x;
-			double dy = e.getY() - lastDragPoint.y;
-			offsetX += dx;
-			offsetY += dy;
+			offsetX += e.getX() - lastDragPoint.x;
+			offsetY += e.getY() - lastDragPoint.y;
 			lastDragPoint = e.getPoint();
-			recordPanVelocity(dx, dy);
-			// Blit the cached buffer shifted for instant feedback, but re-bake mid-pan once we've drifted far
-			// enough that its detailed halo is thinning — so detail keeps up during a long drag, not only when it
-			// stops. The re-bake aims ahead along the velocity so it lands where we're going, not where we were.
-			if (driftNeedsRebake()) {
-				bufferDirty = true;
-			}
+			// No mid-pan rebuild: the cached buffer blits shifted (the low-geometry pass fills any fringe) and the
+			// settle timer re-bakes it crisp once the pan stops.
 			viewSettle.restart();
 			repaint();
 			onViewChanged.run();
@@ -1928,7 +1860,6 @@ final class MappaCanvas extends JComponent {
 	/** Sets the scale to {@code nextScale} while keeping the world point under {@code pivot} fixed on screen. */
 	private void zoomTo(Point pivot, double nextScale) {
 		cameraFollow.stop();   // a manual zoom takes over from an in-flight minimap glide
-		clearPanVelocity();
 		double next = clampScale(nextScale);
 		double applied = next / scale;
 		offsetX = pivot.x - (pivot.x - offsetX) * applied;
