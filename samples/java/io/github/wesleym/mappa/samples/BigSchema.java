@@ -18,14 +18,16 @@ import javax.swing.JSpinner;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
+import javax.swing.Timer;
 
 import java.awt.BorderLayout;
 import java.awt.FlowLayout;
+import java.awt.GridLayout;
 
 /**
  * A stress-test playground: dial the schema up with the knobs on top — domains, tables per domain, columns
- * per table (into the tens of thousands of tables), plus layout, detail, edges, backdrop, theme, and minimap
- * — then hit Build and watch how Mappa copes. The schema is generated off the UI thread; the status line
+ * per table (into the tens of thousands of tables), plus layout, detail, edges, backdrop, theme, and minimap.
+ * Every change re-renders (Build forces it); the schema is generated off the UI thread and the status line
  * reports the table/column count and how long generation took (the layout then runs in the background).
  * Drag the minimap to fly around, pan and wheel-zoom, click a table to spotlight it.
  */
@@ -57,22 +59,35 @@ public final class BigSchema {
 		JComboBox<String> theme = combo(new String[] { "Light", "Dark" }, "Light");
 		JButton build = new JButton("Build");
 		JLabel status = new JLabel("  ");
-
-		JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 6));
-		add(bar, "Domains", domains);
-		add(bar, "Tables/domain", perDomain);
-		add(bar, "Columns", columns);
-		add(bar, "Layout", layout);
-		add(bar, "Detail", detail);
-		add(bar, "Edges", edges);
-		add(bar, "Backdrop", backdrop);
-		add(bar, "Minimap", minimap);
-		add(bar, "Theme", theme);
-		bar.add(build);
-
 		JPanel center = new JPanel(new BorderLayout());
 
+		// A FlowLayout bar in BorderLayout.NORTH only gets one row of height (a second wrapped row is clipped),
+		// so lay the controls out as two explicit rows that are both always visible.
+		JPanel row1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 6));
+		add(row1, "Domains", domains);
+		add(row1, "Tables/domain", perDomain);
+		add(row1, "Columns", columns);
+		row1.add(build);
+		JPanel row2 = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 6));
+		add(row2, "Layout", layout);
+		add(row2, "Detail", detail);
+		add(row2, "Edges", edges);
+		add(row2, "Backdrop", backdrop);
+		add(row2, "Minimap", minimap);
+		add(row2, "Theme", theme);
+		JPanel bar = new JPanel(new GridLayout(2, 1));
+		bar.add(row1);
+		bar.add(row2);
+
+		boolean[] building = { false };
+		Runnable[] rebuildRef = new Runnable[1];
+		Timer[] debounceRef = new Timer[1];
 		Runnable rebuild = () -> {
+			if (building[0]) {
+				debounceRef[0].restart();   // a build is in flight — retry with the latest values once it finishes
+				return;
+			}
+			building[0] = true;
 			int nDomains = (int) domains.getValue();
 			int perDom = (int) perDomain.getValue();
 			int nCols = (int) columns.getValue();
@@ -90,13 +105,14 @@ public final class BigSchema {
 				@Override
 				protected void done() {
 					long ms = (System.nanoTime() - start) / 1_000_000;
+					building[0] = false;
+					build.setEnabled(true);
 					MappaMap map;
 					try {
 						map = get();
 					}
 					catch (Exception ex) {
 						status.setText("  failed: " + ex.getMessage());
-						build.setEnabled(true);
 						return;
 					}
 					MappaTheme th = "Dark".equals(theme.getSelectedItem()) ? MappaTheme.dark() : MappaTheme.light();
@@ -113,10 +129,23 @@ public final class BigSchema {
 					center.repaint();
 					status.setText("  " + tables + " tables, " + (tables * nCols) + " columns - generated in "
 							+ ms + " ms (layout runs in the background)");
-					build.setEnabled(true);
 				}
 			}.execute();
 		};
+		rebuildRef[0] = rebuild;
+
+		// Apply changes live, debounced, so rapid edits (holding a spinner, flipping combos) coalesce into one
+		// rebuild — no need to hunt for the Build button.
+		Timer debounce = new Timer(280, e -> rebuildRef[0].run());
+		debounce.setRepeats(false);
+		debounceRef[0] = debounce;
+		Runnable schedule = debounce::restart;
+		for (JComboBox<?> combo : new JComboBox<?>[] { layout, detail, edges, backdrop, minimap, theme }) {
+			combo.addActionListener(e -> schedule.run());
+		}
+		for (JSpinner spinner : new JSpinner[] { domains, perDomain, columns }) {
+			spinner.addChangeListener(e -> schedule.run());
+		}
 		build.addActionListener(e -> rebuild.run());
 
 		JPanel root = new JPanel(new BorderLayout());
