@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      # The Swing tests run headless, but resolving a default font needs fontconfig + a real font.
+      - name: Install fonts for headless AWT
+        run: sudo apt-get update && sudo apt-get install -y fontconfig fonts-dejavu-core
+      - name: Test
+        run: ./gradlew check
+      - name: Upload diagram previews
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mappa-previews
+          path: build/*.png
+          if-no-files-found: ignore

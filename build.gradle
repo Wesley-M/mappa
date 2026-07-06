@@ -1,0 +1,101 @@
+// Mappa - opinionated relationship maps for Java.
+// Pure JDK by design: hosts provide data and actions; Mappa owns presentation.
+plugins {
+    id 'java-library'
+    id 'jacoco'
+}
+
+jacocoTestReport {
+    dependsOn test
+    reports {
+        xml.required = true
+        csv.required = true
+    }
+}
+
+// A 90% branch-coverage floor on the logic. Four classes are excluded because their branches are display-
+// and input-driven, not logic: the interactive canvas and its raw wheel/scroll event classifiers need a
+// live pointer, and the Java2D pixel painter is verified by the render-and-look harness (every layout, edge
+// style, background and theme rendered to build/mappa-*.png) plus the runnable samples, not by branch count.
+def coverageExcludes = [
+    '**/MappaCanvas*.class', '**/SceneRenderer*.class', '**/WheelStream*.class', '**/ScrollAxisLock*.class'
+]
+
+jacocoTestCoverageVerification {
+    dependsOn test
+    classDirectories.setFrom(files(classDirectories.files.collect {
+        fileTree(dir: it, exclude: coverageExcludes)
+    }))
+    violationRules {
+        rule {
+            limit {
+                counter = 'BRANCH'
+                value = 'COVEREDRATIO'
+                minimum = 0.90
+            }
+        }
+    }
+}
+tasks.named('check') { dependsOn tasks.named('jacocoTestCoverageVerification') }
+
+group = 'io.github.wesleym'
+version = '0.1.0'
+
+repositories {
+    mavenCentral()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+    options.encoding = 'UTF-8'
+}
+
+javadoc {
+    options.addStringOption('Xdoclint:all,-missing', '-quiet')
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+    systemProperty 'java.awt.headless', 'true'
+}
+
+// ---- runnable samples ------------------------------------------------------------------------------
+// Small, heavily-commented programs to play with - one window each. `gradlew runSchemaTour` etc.;
+// compiled as part of `check` so the published samples can never rot.
+sourceSets {
+    samples {
+        java { srcDir 'samples/java' }
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
+def sampleMains = [
+    HelloMappa       : 'the starter: one schema, one window',
+    SchemaTour       : 'the curated controls at once - layout, edges, detail, backdrop, theme, action',
+    LayoutLab        : 'every control on a picker: re-lay-out the map live',
+    ThemeGallery     : 'live re-theming across a handful of one-expression themes',
+    FocusExplorer    : 'the interactive-host pattern: pick an entity, focus() to its neighbourhood',
+    DocumentRoundTrip: 'write the native .mappa binary to disk and draw it back',
+]
+sampleMains.each { name, blurb ->
+    tasks.register("run${name}", JavaExec) {
+        group = 'samples'
+        description = blurb
+        classpath = sourceSets.samples.runtimeClasspath
+        mainClass = "io.github.wesleym.mappa.samples.${name}"
+    }
+}
+tasks.register('samples') {
+    group = 'samples'
+    description = 'Lists the runnable samples.'
+    def lines = sampleMains.collect { name, blurb -> "  gradlew run${name}".padRight(30) + "  ${blurb}" }
+    doLast { lines.each { println it } }
+}
+tasks.named('check') { dependsOn tasks.named('compileSamplesJava') }
