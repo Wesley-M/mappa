@@ -18,6 +18,7 @@ import io.github.wesleym.mappa.internal.common.Style;
 import io.github.wesleym.mappa.MappaMap;
 import io.github.wesleym.mappa.MappaMinimap;
 import io.github.wesleym.mappa.MappaTheme;
+import io.github.wesleym.mappa.MappaView;
 
 import javax.swing.JComponent;
 import javax.swing.JMenuItem;
@@ -73,7 +74,7 @@ import java.util.stream.IntStream;
 
 /**
  * The interactive surface for the ER diagram: owns the viewport (pan/zoom/fit) and pointer interaction
- * (drag a table, scroll its columns, hover to highlight, right-click to remove). The scene model, layout,
+ * (drag a table, scroll its columns, hover to highlight, right-click for the host's actions). The scene model, layout,
  * edge routing, and painting live in {@link Scene}, {@link SceneBuilder},
  * {@link EdgeRouter}, and {@link SceneRenderer}; this class just wires them to the screen.
  */
@@ -194,11 +195,10 @@ final class MappaCanvas extends JComponent {
 	private int draggingLabel = -1;     // edge index of the label being dragged, or -1
 	private double labelGrabX;          // label centre minus grab point, in world units
 	private double labelGrabY;
-	private Consumer<String> onRemoveTable = name -> { };
 	private Consumer<String> onActiveTable = name -> { };   // notified with the selected table (or null)
 	private Consumer<MappaMap> onArranged = m -> { };       // notified with the positioned map after a box drag
 	private Runnable onViewChanged = () -> { };             // fired when the viewport pans/zooms/refits
-	private TableActions tableActions = TableActions.none();   // shell actions for the right-click menu
+	private List<MappaView.EntityAction> entityActions = List.of();   // host actions for the right-click menu
 	// Drives the flowing-particle animation along the active table's edges; only ticks while one is active.
 	private double flowPhase;
 	private final Timer flowTimer = new Timer(33, e -> {
@@ -271,11 +271,6 @@ final class MappaCanvas extends JComponent {
 		this.focusTable = focusTable;
 	}
 
-	/** Called with a table's name when the user removes it via the canvas context menu. */
-	void setRemoveHandler(Consumer<String> onRemoveTable) {
-		this.onRemoveTable = onRemoveTable;
-	}
-
 	/** Called with the selected (clicked) table's name (or null when the selection is cleared). */
 	void setActiveHandler(Consumer<String> onActiveTable) {
 		this.onActiveTable = onActiveTable;
@@ -291,9 +286,9 @@ final class MappaCanvas extends JComponent {
 		this.onViewChanged = onViewChanged;
 	}
 
-	/** The shell actions (open data / insights / watch) offered on a table's right-click menu. */
-	void setTableActions(TableActions actions) {
-		this.tableActions = actions != null ? actions : TableActions.none();
+	/** The host actions offered on a table's right-click menu, in order; a null-handler entry is a divider. */
+	void setEntityActions(List<MappaView.EntityAction> actions) {
+		this.entityActions = actions == null ? List.of() : List.copyOf(actions);
 		rebuildMenu();
 	}
 
@@ -601,37 +596,38 @@ final class MappaCanvas extends JComponent {
 		bufferDirty = true;
 	}
 
-	// Rebuilt whenever the shell actions change: the navigation items (open data / insights / watch) first, then a
-	// divider, then the diagram-local Remove. Each item is omitted when its action isn't wired.
+	// Rebuilt whenever the host actions change: items in registration order, a null-handler entry drawn as a
+	// divider (never leading, so a menu doesn't open on a rule).
 	private void rebuildMenu() {
 		tableMenu.removeAll();
-		addTableActionItem("Show data", tableActions.showData());
-		addTableActionItem("Show insights", tableActions.showInsights());
-		addTableActionItem("Open focused diagram", tableActions.openFocusedDiagram());
-		addTableActionItem("Start monitoring for changes", tableActions.watch());
-		if (tableMenu.getComponentCount() > 0) {
-			tableMenu.addSeparator();
-		}
-		JMenuItem remove = new JMenuItem("Remove from diagram");
-		remove.addActionListener(a -> {
-			if (menuTable != null) {
-				onRemoveTable.accept(menuTable.name());
+		for (MappaView.EntityAction action : entityActions) {
+			if (action.handler() == null) {
+				if (tableMenu.getComponentCount() > 0) {
+					tableMenu.addSeparator();
+				}
+				continue;
 			}
-		});
-		tableMenu.add(remove);
+			JMenuItem item = new JMenuItem(action.label());
+			item.addActionListener(a -> {
+				MappaMap.Entity entity = menuTable == null ? null : entityNamed(menuTable.name());
+				if (entity != null) {
+					action.handler().accept(entity);
+				}
+			});
+			tableMenu.add(item);
+		}
 	}
 
-	private void addTableActionItem(String label, Consumer<String> action) {
-		if (action == null) {
-			return;
+	// Menu actions hand the host the live map's entity, not just a name — resolved at click time so a
+	// setMap() swap can't leave an item pointing at a stale map.
+	MappaMap.Entity entityNamed(String name) {
+		if (graph == null || name == null) {
+			return null;
 		}
-		JMenuItem item = new JMenuItem(label);
-		item.addActionListener(a -> {
-			if (menuTable != null) {
-				action.accept(menuTable.name());
-			}
-		});
-		tableMenu.add(item);
+		String key = name.toLowerCase(Locale.ROOT);
+		return graph.entities().stream()
+				.filter(e -> e.name().toLowerCase(Locale.ROOT).equals(key))
+				.findFirst().orElse(null);
 	}
 
 	// ---- Painting ----------------------------------------------------------------------------------
@@ -1845,7 +1841,7 @@ final class MappaCanvas extends JComponent {
 			return false;
 		}
 		menuTable = scene.tableAt(toWorld(e.getPoint()));
-		if (menuTable != null) {
+		if (menuTable != null && tableMenu.getComponentCount() > 0) {
 			tableMenu.show(this, e.getX(), e.getY());
 			return true;
 		}

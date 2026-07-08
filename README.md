@@ -182,8 +182,8 @@ The live component carries the full interaction layer, all on by default:
 - **Trace a join path** — shift-click a second box to light the shortest FK path between the two.
 - **Search** — a floating "find a table" field with live suggestions; choose one and the view reveals and
   spotlights it.
-- **Context actions** — right-click a box for host `action(label, handler)` items; `onEntitySelected`
-  reports the active entity.
+- **Context actions** — right-click a box for host `action(label, handler)` items, in registration order,
+  with `actionSeparator()` dividing groups; `onEntitySelected` reports the active entity. No actions, no menu.
 
 ### Saved layouts
 

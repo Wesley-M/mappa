@@ -66,6 +66,12 @@ public final class MappaView {
 		return this;
 	}
 
+	/** Adds a divider between action groups in the context menu (a leading divider is not drawn). */
+	public MappaView actionSeparator() {
+		actions.add(EntityAction.SEPARATOR);
+		return this;
+	}
+
 	/** Receives the active entity, or {@code null} when the selection clears. */
 	public MappaView onEntitySelected(Consumer<MappaMap.Entity> handler) {
 		this.onEntitySelected = handler == null ? entity -> { } : handler;
@@ -96,7 +102,8 @@ public final class MappaView {
 	 * plus host-drivable {@link MappaComponent#zoomIn}/{@code zoomOut}/{@code fitView}/{@code setAnimating}.
 	 */
 	public MappaComponent component() {
-		return new MappaComponent(StaticRender.live(map, options, theme, onEntitySelected, onArranged, minimap));
+		return new MappaComponent(
+				StaticRender.live(map, options, theme, List.copyOf(actions), onEntitySelected, onArranged, minimap));
 	}
 
 	/** Renders the full map to a new image over the theme background. */
@@ -147,6 +154,9 @@ public final class MappaView {
 		Files.writeString(file, StaticRender.interactiveHtml(map, options, theme, title, false));
 	}
 
-	/** A host action shown for an entity. */
-	public record EntityAction(String label, Consumer<MappaMap.Entity> handler) { }
+	/** A host action shown for an entity; {@link #SEPARATOR} marks a divider between action groups. */
+	public record EntityAction(String label, Consumer<MappaMap.Entity> handler) {
+		/** A group divider in the context menu, not a selectable item (recognised by its null handler). */
+		public static final EntityAction SEPARATOR = new EntityAction("", null);
+	}
 }
