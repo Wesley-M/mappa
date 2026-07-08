@@ -1,5 +1,6 @@
 package io.github.wesleym.mappa.internal.render;
 
+import io.github.wesleym.mappa.internal.common.Fonts;
 import io.github.wesleym.mappa.internal.common.LightweightMode;
 import io.github.wesleym.mappa.internal.common.ScrollAxisLock;
 import io.github.wesleym.mappa.internal.common.WheelStream;
@@ -200,15 +201,23 @@ final class MappaCanvas extends JComponent {
 	private Runnable onViewChanged = () -> { };             // fired when the viewport pans/zooms/refits
 	private List<MappaView.EntityAction> entityActions = List.of();   // host actions for the right-click menu
 	// Drives the flowing-particle animation along the active table's edges; only ticks while one is active.
+	// The phase advances by real elapsed time, not by tick count: Swing timers jitter under EDT load, and a
+	// late tick that still advanced a full step read as a stutter (most visibly on the dash arrow heads).
+	// Clamped so a long stall (or the first tick after a pause) glides on rather than leaping.
 	private double flowPhase;
+	private long flowTickNanos;
 	private final Timer flowTimer = new Timer(33, e -> {
-		flowPhase += 1.0;   // gentle drift
+		long now = System.nanoTime();
+		double ticks = flowTickNanos == 0 ? 1.0 : Math.min(3.0, (now - flowTickNanos) / 33_000_000.0);
+		flowTickNanos = now;
+		flowPhase += ticks;   // gentle drift
 		repaint();
 	});
 	// Coalesces rapid pan/zoom into one crisp re-bake: while panning/zooming we blit the cached buffer
 	// transformed (instant), and only re-render the scene once motion has paused for a beat.
 	private final Timer viewSettle = new Timer(110, e -> {
 		bufferDirty = true;   // re-bake crisp once a pan/zoom stops; the blit shows the moved view until then
+		updateFlowTimer();    // the visible lit-edge count changed with the view — re-gate the flow animation
 		repaint();
 	});
 	// A resize/sidebar-drag is handled differently: trying to redraw the diagram mid-drag flickers, jumps and
@@ -300,6 +309,7 @@ final class MappaCanvas extends JComponent {
 	/** Rebuilds and re-lays-out the diagram for {@code map}; once laid out, the next paint fits it to the viewport. */
 	void setMap(MappaMap map) {
 		this.graph = map;
+		refreshFontsAndRenderer();   // the bundled-vs-fallback font choice is per map (glyph coverage)
 		rebuildScene(true);
 	}
 
@@ -484,8 +494,9 @@ final class MappaCanvas extends JComponent {
 	}
 
 	private boolean refreshFontsAndRenderer() {
-		Font nextTitle = StaticRender.TITLE_FONT;
-		Font nextRow = StaticRender.ROW_FONT;
+		StaticRender.DiagramFonts fonts = StaticRender.DiagramFonts.of(graph);
+		Font nextTitle = fonts.title();
+		Font nextRow = fonts.row();
 		boolean changed = renderer == null || !nextTitle.equals(titleFont) || !nextRow.equals(rowFont);
 		setFont(Style.unscaledFont(Style.BODY, Font.PLAIN));
 		if (!changed) {
@@ -699,8 +710,13 @@ final class MappaCanvas extends JComponent {
 
 		// Low-geometry placeholders beneath the detailed buffer: where the buffer doesn't reach (a fast pan or
 		// zoom-out exposes its margin), boxes still show their structure instead of appearing from nothing. The
-		// opaque buffer covers them where it's baked; the settle re-bake resolves them to full detail.
-		if (scene != null && !LightweightMode.isOn()) {
+		// opaque buffer covers them where it's baked; the settle re-bake resolves them to full detail. When the
+		// buffer covers the whole viewport (any still view, and every flow-animation frame), they'd be painted
+		// over entirely — skip the pass rather than draw a scene's worth of invisible boxes 30× a second.
+		boolean bufferCovers = tx <= 0 && ty <= 0
+				&& tx + f * buffer.getWidth() >= getWidth() * dpr
+				&& ty + f * buffer.getHeight() >= getHeight() * dpr;
+		if (scene != null && !LightweightMode.isOn() && !bufferCovers) {
 			Graphics2D sil = (Graphics2D) g.create();
 			sil.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 			sil.translate(offsetX, offsetY);
@@ -727,11 +743,12 @@ final class MappaCanvas extends JComponent {
 			renderer.drawDragged(overlay, scene, geometry, paths, draggingIndex, focusTable);
 		}
 		else if (!pathEdges.isEmpty()) {
-			renderer.drawPath(overlay, scene, paths, flatPaths, pathEdges, pathFrom, pathTo, flowPhase, scale);
+			renderer.drawPath(overlay, scene, paths, flatPaths, pathEdges, pathFrom, pathTo, flowPhase, scale,
+					visibleWorld(0), edgeBounds);
 			renderer.drawJoinLabelsOver(overlay, scene, joinLabelRects, pathEdges);   // comets below the hints
 		}
 		else if (active != null) {
-			renderer.drawFlow(overlay, scene, flatPaths, active, flowPhase, scale);
+			renderer.drawFlow(overlay, scene, flatPaths, active, flowPhase, scale, visibleWorld(0), edgeBounds);
 			renderer.drawJoinLabelsOver(overlay, scene, joinLabelRects, edgesTouching(active));   // flow below the hints
 		}
 		overlay.dispose();
@@ -890,7 +907,7 @@ final class MappaCanvas extends JComponent {
 		int cy = h / 2;
 		drawNodeGlyph(g2, cx, cy - 26);
 
-		g2.setFont(titleFont.deriveFont(Font.PLAIN, 13f));
+		g2.setFont(Fonts.sans(13f));
 		g2.setColor(theme.muted());
 		String msg = "Redrawing when you stop resizing";
 		FontMetrics fm = g2.getFontMetrics();
@@ -1818,21 +1835,55 @@ final class MappaCanvas extends JComponent {
 	}
 
 	// The flow animation ticks while a table is selected or a path is traced, and is otherwise idle. It runs
-	// at any zoom (the dashed flow is cheap and clipped by Java2D), so it never blinks out when you zoom right
-	// in. A massively-referenced table lights too many edges to animate every frame, so above the renderer's
-	// cap we leave the timer stopped — the edges still light up (drawn statically), just without the flow.
+	// at any zoom (the flow strokes only the viewport-visible run of each edge), so it never blinks out when
+	// you zoom right in. Too many lit edges *on screen* is the one thing that can't animate smoothly, so past
+	// the renderer's cap we leave the timer stopped — the edges still light up (drawn statically), just without
+	// the flow. Counting visible edges (not all of a hub's) means a massively-referenced table still flows once
+	// you're zoomed in on a readable slice of it; the count is re-checked whenever the viewport settles.
 	private void updateFlowTimer() {
-		int litEdges = (active != null ? edgesTouching(active).size() : 0) + pathEdges.size();
+		int litEdges = (active != null ? visibleCount(edgesTouching(active)) : 0) + visibleCount(pathEdges);
 		boolean wantFlow = animating   // a host can pause the decorative flow (e.g. while its tab is hidden)
 				&& !LightweightMode.isOn()   // lightweight: no flowing-edge animation at all
 				&& (active != null || !pathEdges.isEmpty())
+				&& SceneRenderer.flowAnimates(scene, scale * deviceScale())   // zoomed far out: static highlight
 				&& litEdges <= SceneRenderer.MAX_FLOW_EDGES;
 		if (wantFlow) {
-			flowTimer.start();
+			if (!flowTimer.isRunning()) {
+				flowTickNanos = 0;   // fresh start: don't count the paused span as elapsed animation time
+				flowTimer.start();
+			}
 		}
 		else {
 			flowTimer.stop();
 		}
+	}
+
+	// The display's HiDPI factor — the same device zoom the renderer's LOD sees, for gating outside a paint.
+	private double deviceScale() {
+		GraphicsConfiguration gc = getGraphicsConfiguration();
+		return gc == null ? 1.0 : gc.getDefaultTransform().getScaleX();
+	}
+
+	// How many of the given edges touch the viewport — the flow animation's real per-frame workload. Bounds
+	// are padded by 1px so a perfectly straight (zero-area) edge still counts. Before the first geometry pass
+	// there are no bounds yet; every edge counts as visible, and the settle re-check corrects it.
+	private int visibleCount(List<Integer> edgeIndices) {
+		if (edgeIndices.isEmpty()) {
+			return 0;
+		}
+		Rectangle2D visible = visibleWorld(24);
+		int count = 0;
+		for (int i : edgeIndices) {
+			if (i < 0 || i >= edgeBounds.size()) {
+				count++;
+				continue;
+			}
+			Rectangle2D b = edgeBounds.get(i);
+			if (visible.intersects(b.getX() - 1, b.getY() - 1, b.getWidth() + 2, b.getHeight() + 2)) {
+				count++;
+			}
+		}
+		return count;
 	}
 
 	/** On a popup trigger over a table, shows its context menu and returns true (so press/drag is skipped). */

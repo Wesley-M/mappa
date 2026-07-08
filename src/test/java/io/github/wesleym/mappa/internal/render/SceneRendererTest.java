@@ -172,14 +172,74 @@ class SceneRendererTest {
 
 		assertDoesNotThrow(() -> {
 			renderer.draw(canvas(), p.scene(), p.geometry(), p.paths(), p.labels(), active, "orders", -1, true, null);
-			renderer.drawFlow(canvas(), p.scene(), flats, active, 42.0, 1.0);
+			renderer.drawFlow(canvas(), p.scene(), flats, active, 42.0, 1.0, null, null);
 			renderer.drawDragged(canvas(), p.scene(), p.geometry(), p.paths(), 0, "orders");
 			renderer.drawJoinLabelsOver(canvas(), p.scene(), p.labels(), List.of(0));
 			if (!pathEdges.isEmpty()) {
 				renderer.drawPath(canvas(), p.scene(), p.paths(), flats, pathEdges, 0,
-						p.scene().tables().size() - 1, 42.0, 1.0);
+						p.scene().tables().size() - 1, 42.0, 1.0, null, null);
 			}
 		});
+	}
+
+	// The viewport-clipped flow must be indistinguishable from the full render inside the viewport: only the
+	// visible run of each edge is stroked, with the dash phase advanced by the skipped arc length. A phase
+	// bug would shift every comet by up to a dash period — huge pixel deltas — so the tolerance below only
+	// absorbs antialiasing jitter from the run starting mid-polyline.
+	@Test
+	void clippedFlowMatchesTheFullRenderInsideTheViewport() {
+		Prepared p = prepare(scene(commerce(), false));
+		EntityBox active = p.scene().tables().stream()
+				.filter(t -> t.name().equals("orders")).findFirst().orElseThrow();
+		List<double[][]> flats = new ArrayList<>();
+		List<Rectangle2D> edgeBounds = new ArrayList<>();
+		for (Path2D path : p.paths()) {
+			flats.add(SceneRenderer.flatten(path));
+			edgeBounds.add(path.getBounds2D());
+		}
+		Rectangle2D world = p.scene().worldBounds();
+		// A viewport over the middle of the diagram, so edges enter and leave it (the clipping under test).
+		Rectangle2D visible = new Rectangle2D.Double(world.getCenterX() - world.getWidth() / 4,
+				world.getCenterY() - world.getHeight() / 4, world.getWidth() / 2, world.getHeight() / 2);
+
+		SceneRenderer renderer = new SceneRenderer(MappaTheme.light(), TITLE, ROW);
+		BufferedImage full = flowImage(renderer, p.scene(), flats, active, world, null, null);
+		BufferedImage clipped = flowImage(renderer, p.scene(), flats, active, world, visible, edgeBounds);
+
+		// Compare well inside the viewport, clear of the clip pad where a run's stroke begins/ends.
+		int inset = 24;
+		int x0 = (int) (visible.getX() - world.getX()) + inset;
+		int y0 = (int) (visible.getY() - world.getY()) + inset;
+		int x1 = (int) (visible.getMaxX() - world.getX()) - inset;
+		int y1 = (int) (visible.getMaxY() - world.getY()) - inset;
+		int worst = 0;
+		boolean sawInk = false;
+		for (int y = y0; y < y1; y++) {
+			for (int x = x0; x < x1; x++) {
+				int a = full.getRGB(x, y);
+				int b = clipped.getRGB(x, y);
+				sawInk |= a != 0xFFFFFFFF;
+				worst = Math.max(worst, Math.max(Math.abs(((a >> 16) & 0xFF) - ((b >> 16) & 0xFF)),
+						Math.max(Math.abs(((a >> 8) & 0xFF) - ((b >> 8) & 0xFF)),
+								Math.abs((a & 0xFF) - (b & 0xFF)))));
+			}
+		}
+		assertTrue(sawInk, "the viewport should contain some of the active table's flow");
+		assertTrue(worst <= 16, "clipped flow diverged from the full render inside the viewport (worst channel delta "
+				+ worst + ")");
+	}
+
+	private static BufferedImage flowImage(SceneRenderer renderer, Scene scene, List<double[][]> flats,
+			EntityBox active, Rectangle2D world, Rectangle2D visible, List<Rectangle2D> edgeBounds) {
+		BufferedImage img = new BufferedImage((int) Math.ceil(world.getWidth()) + 1,
+				(int) Math.ceil(world.getHeight()) + 1, BufferedImage.TYPE_INT_RGB);
+		Graphics2D g = img.createGraphics();
+		g.setColor(Color.WHITE);
+		g.fillRect(0, 0, img.getWidth(), img.getHeight());
+		g.translate(-world.getX(), -world.getY());
+		renderer.drawFlow(g, scene, flats, active, 42.0, 1.0, visible, edgeBounds);
+		g.dispose();
+		return img;
 	}
 
 	// A chain of n entities — big enough (>=60) that a low-zoom render trips the level-of-detail tiers.
@@ -270,7 +330,7 @@ class SceneRendererTest {
 
 		SceneRenderer renderer = new SceneRenderer(theme, TITLE, ROW);
 		renderer.draw(g, p.scene(), p.geometry(), p.paths(), p.labels(), active, "orders", -1, true, null);
-		renderer.drawFlow(g, p.scene(), flats, active, 60.0, zoom);
+		renderer.drawFlow(g, p.scene(), flats, active, 60.0, zoom, null, null);
 		renderer.drawJoinLabelsOver(g, p.scene(), p.labels(), activeEdges);
 		g.dispose();
 

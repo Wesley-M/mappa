@@ -16,8 +16,10 @@ public final class Style {
 	public static final float BODY = 13f;
 
 	static Font base() {
+		// The host's look-and-feel font wins (FlatLaf etc. set "defaultFont"); otherwise the bundled Inter,
+		// so the chrome matches the diagram instead of the platform's logical SansSerif mapping.
 		Font font = UIManager.getFont("defaultFont");
-		return font != null ? font : new Font("SansSerif", Font.PLAIN, 13);
+		return font != null ? font : Fonts.sans(13f);
 	}
 
 	public static Font unscaledFont(float size, int style) {

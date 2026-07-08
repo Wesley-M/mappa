@@ -270,6 +270,12 @@ that's an API gap to raise, not a reason to reach inside.
 
 Java 17+. No dependencies.
 
+Mappa bundles its diagram typefaces — [Inter](https://rsms.me/inter/) for entity titles and
+[JetBrains Mono](https://www.jetbrains.com/lp/mono/) for field rows, both SIL OFL 1.1 licensed — so a map
+renders with the same weight, rhythm, and box sizes on every platform instead of whatever the OS maps
+`SansSerif` to. Schemas whose names need scripts beyond the bundled coverage (e.g. CJK) automatically fall
+back to the platform fonts.
+
 ## Building
 
 ```

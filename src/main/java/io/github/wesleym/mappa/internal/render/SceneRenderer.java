@@ -29,6 +29,7 @@ import java.awt.geom.PathIterator;
 import java.awt.geom.Point2D;
 import java.awt.geom.Rectangle2D;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -59,7 +60,9 @@ final class SceneRenderer {
 		this.theme = theme;
 		this.titleFont = titleFont;
 		this.rowFont = rowFont;
-		this.regionLabelFont = titleFont.deriveFont(Font.BOLD, 12.5f);
+		// Keep the title font's own weight (bundled Inter SemiBold carries it in the outlines; the logical
+		// fallback carries a BOLD style flag) — re-deriving BOLD here would fake-embolden the bundled face.
+		this.regionLabelFont = titleFont.deriveFont(12.5f);
 	}
 
 	// MappaTheme carries the same palette QueryTheme did, minus two derived tints the renderer wants:
@@ -207,43 +210,230 @@ final class SceneRenderer {
 	// stroked path per edge — rather than a particle stream, so the per-frame cost is a constant couple of
 	// strokes per edge regardless of how long or how distant the edge is (the old comets paid
 	// count * tail-samples antialiased fills, which fell apart on large/far graphs). One bound remains: don't
-	// animate at all past a lit-edge count, so a hub with hundreds of edges leans on the buffer's highlight.
+	// animate at all past a lit-edge count — counted on the edges actually in the viewport, so a hub with
+	// hundreds of relationships still flows when you're zoomed in on a handful of them.
 	static final int MAX_FLOW_EDGES = 80;
 
-	/** Overlay: a travelling, glowing dashed highlight along the active table's edges. The flow is cheap
-	 *  enough (a few clipped strokes per edge) to run at any zoom — only the edge-count cap bounds it, so it
-	 *  never blinks out when you zoom right in (the edges leave the viewport but Java2D clips them for free). */
+	// How far past the viewport the flow keeps stroking (screen px, scaled to world units where used), so a
+	// comet's glow never pops at the boundary — comfortably wider than the widest glow stroke (9px).
+	private static final double FLOW_CLIP_PAD = 16;
+
+	// Below this device zoom the flow doesn't animate on a large scene — the same move as the other
+	// low-geometry strategies (see the LOD knobs): zoomed far out the edges are hairlines and the whole
+	// diagram is in view, so the flow is both at its most expensive and pure visual noise. Sits between
+	// EDGE_ZOOM (edges reappear) and COLUMN_ZOOM (rows become readable): once you can nearly read a box,
+	// its relationships start moving.
+	static final double FLOW_ZOOM = 0.45;
+
+	/**
+	 * Whether the flow animation runs at this device zoom (px per world unit). Mirrors {@link #lodZoom}'s
+	 * rule: a small scene always animates (it's cheap and nothing should ever visibly switch off); a large
+	 * one animates only once zoomed in past {@link #FLOW_ZOOM} — further out, the static highlight stands in.
+	 */
+	static boolean flowAnimates(Scene scene, double deviceZoom) {
+		return scene.tables().size() <= LOD_MIN_TABLES || deviceZoom >= FLOW_ZOOM;
+	}
+
+	/**
+	 * Overlay: a travelling, glowing dashed highlight along the active table's edges. Only the stretch of
+	 * each edge inside {@code visible} is stroked (Java2D would flatten, dash, and cap the whole path before
+	 * clipping — on a large diagram most of that work is off-screen), with the dash phase advanced by the
+	 * skipped arc length so the clip is invisible. Edges wholly outside the viewport cost one bounds test.
+	 */
 	void drawFlow(Graphics2D g2, Scene scene, List<double[][]> flats, EntityBox hovered,
-			double flowPhase, double scale) {
+			double flowPhase, double scale, Rectangle2D visible, List<Rectangle2D> edgeBounds) {
+		if (!flowAnimates(scene, g2.getTransform().getScaleX())) {
+			return;   // zoomed far out on a large scene — the buffer's static highlight stands in
+		}
 		g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 		int index = scene.indexOf(hovered);
 		List<Link> edges = scene.edges();
+		double inv = 1.0 / Math.max(scale, 0.0001);
+		Rectangle2D clip = padded(visible, FLOW_CLIP_PAD * inv);
 		List<Integer> animate = new ArrayList<>();
 		for (int i = 0; i < flats.size() && i < edges.size(); i++) {
-			if (edges.get(i).from() == index || edges.get(i).to() == index) {
+			if ((edges.get(i).from() == index || edges.get(i).to() == index) && inView(clip, edgeBounds, i)) {
 				animate.add(i);
 			}
 		}
 		if (animate.isEmpty() || animate.size() > MAX_FLOW_EDGES) {
-			return;   // nothing lit, or too many to animate — the buffer's static highlight stands in
+			return;   // nothing lit on screen, or too many to animate — the buffer's static highlight stands in
 		}
-		double inv = 1.0 / Math.max(scale, 0.0001);
 		FlowStyle brandStyle = FlowStyle.of(theme.entityHeader(), inv, flowPhase);
 		FlowStyle inferredStyle = FlowStyle.of(INFERRED, inv, flowPhase);
-		Path2D line = new Path2D.Double();   // one reusable path for every edge this frame
+		Path2D line = new Path2D.Double();       // one reusable path for every edge this frame
+		Path2D chevrons = new Path2D.Double();   // and one for each edge's arrow heads
 		for (int i : animate) {
 			double[][] flat = flats.get(i);
 			if (flat == null || flat[0].length < 2) {
 				continue;
 			}
-			polyInto(line, flat);
+			int[] run = visibleRun(flat, clip);
+			if (run == null) {
+				continue;   // bounds overlapped the viewport but no actual segment does (an L-shaped route)
+			}
+			polyInto(line, flat, run[0], run[1]);
+			double skipped = flat[2][run[0]];   // arc length ahead of the run — keeps the dash phase seamless
 			if (directionalEdges && !edges.get(i).inferred()) {
-				paintFlowDirectional(g2, line, flat, brandStyle);   // comet carries the outbound→inbound code
+				paintFlowDirectional(g2, line, flat, brandStyle, skipped);   // comet carries the outbound→inbound code
+				paintDashArrows(g2, chevrons, flat, run, brandStyle, directionalFlowPaint(flat));
 			}
 			else {
-				paintFlowDash(g2, line, edges.get(i).inferred() ? inferredStyle : brandStyle);
+				FlowStyle style = edges.get(i).inferred() ? inferredStyle : brandStyle;
+				paintFlowDash(g2, line, style.colors, style.strokesFrom(skipped));
+				paintDashArrows(g2, chevrons, flat, run, style, style.colors[3]);
 			}
 		}
+	}
+
+	// Whether edge i's cached bounds touch the padded viewport (1px-padded: a perfectly straight edge has a
+	// zero-area bounds rect, which Rectangle2D would treat as intersecting nothing). No bounds → assume visible.
+	private static boolean inView(Rectangle2D clip, List<Rectangle2D> edgeBounds, int i) {
+		if (clip == null || edgeBounds == null || i >= edgeBounds.size()) {
+			return true;
+		}
+		Rectangle2D b = edgeBounds.get(i);
+		return clip.intersects(b.getX() - 1, b.getY() - 1, b.getWidth() + 2, b.getHeight() + 2);
+	}
+
+	private static Rectangle2D padded(Rectangle2D r, double pad) {
+		return r == null ? null
+				: new Rectangle2D.Double(r.getX() - pad, r.getY() - pad, r.getWidth() + 2 * pad, r.getHeight() + 2 * pad);
+	}
+
+	// The arrow heads on the travelling dashes: chevron arm length (screen px) and sweep-back angle.
+	private static final double ARROW_WING = 4.8;
+	private static final double WING_COS = Math.cos(Math.toRadians(30));
+	private static final double WING_SIN = Math.sin(Math.toRadians(30));
+
+	/**
+	 * Little arrow heads on the travelling dashes: a chevron at each dash's leading edge, pointing the way
+	 * the pulse marches (FK → PK) — so the flow reads as direction even in a still frame. Tip positions are
+	 * a global function of arclength and the frame's dash phase, so they land exactly on the dash fronts of
+	 * whatever run was stroked, clipped or not. Every chevron on the edge accumulates into one reusable
+	 * path, stroked twice to match the dash core's layering (body colour + white-hot centre).
+	 */
+	private static void paintDashArrows(Graphics2D g2, Path2D chevrons, double[][] flat, int[] run,
+			FlowStyle style, Paint body) {
+		double inv = style.inv;
+		double period = style.dash + style.gap;
+		double len = flat[2][flat[2].length - 1];
+		double from = flat[2][run[0]];
+		double to = Math.min(flat[2][run[1]], len);
+		chevrons.reset();
+		double[] tip = new double[2];
+		double[] back = new double[2];
+		double[] ahead = new double[2];
+		boolean any = false;
+		// The dash occupies pattern positions [0, dash), so its leading (higher-arclength) edge sits where
+		// the pattern position equals the dash length: s ≡ dash − phaseOffset (mod period).
+		for (double s = from + mod(style.dash - style.phaseOffset - from, period); s <= to; s += period) {
+			// The wings grow in over the first few px of the edge and shrink out over the last few, so an
+			// arrow wrapping from the PK end back to the FK end never pops between frames. (Distance to the
+			// path's true ends, never the viewport's — so clipping can't change how any arrow looks.)
+			double wing = ARROW_WING * inv * Math.min(1, Math.min(s, len - s) / (8 * inv));
+			if (wing < 0.4 * inv) {
+				continue;
+			}
+			pointAt(flat, s, tip);
+			// Orientation from a chord centred on the tip: a longer, symmetric baseline turns the polyline's
+			// corner-by-corner direction changes into a gradual rotation — a short trailing chord made the
+			// arrow visibly snap each time it crossed a flattening vertex on a curved edge.
+			pointAt(flat, Math.max(0, s - 4 * inv), back);
+			pointAt(flat, Math.min(len, s + 4 * inv), ahead);
+			double dx = ahead[0] - back[0];
+			double dy = ahead[1] - back[1];
+			double d = Math.hypot(dx, dy);
+			if (d < 1e-6) {
+				continue;
+			}
+			double bx = -dx / d;   // unit vector pointing back along the edge
+			double by = -dy / d;
+			chevrons.moveTo(tip[0] + (bx * WING_COS - by * WING_SIN) * wing,
+					tip[1] + (bx * WING_SIN + by * WING_COS) * wing);
+			chevrons.lineTo(tip[0], tip[1]);
+			chevrons.lineTo(tip[0] + (bx * WING_COS + by * WING_SIN) * wing,
+					tip[1] + (by * WING_COS - bx * WING_SIN) * wing);
+			any = true;
+		}
+		if (!any) {
+			return;
+		}
+		g2.setPaint(body);
+		g2.setStroke(style.arrowBody);
+		g2.draw(chevrons);
+		g2.setColor(style.colors[4]);   // the same white-hot centre the dashes carry
+		g2.setStroke(style.arrowCore);
+		g2.draw(chevrons);
+	}
+
+	// The directional-mode arrow colouring: the same outbound→inbound gradient the dash body runs, at full
+	// strength. Falls back to the outbound hue for a degenerate (near-zero-span) edge.
+	private Paint directionalFlowPaint(double[][] flat) {
+		int n = flat[0].length;
+		double x0 = flat[0][0];
+		double y0 = flat[1][0];
+		double x1 = flat[0][n - 1];
+		double y1 = flat[1][n - 1];
+		if (Math.hypot(x1 - x0, y1 - y0) < 1.0) {
+			return outboundColour();
+		}
+		return new GradientPaint((float) x0, (float) y0, outboundColour(), (float) x1, (float) y1, inboundColour());
+	}
+
+	// The point at arclength s along the flattened polyline (x[], y[], cumulative-length[]), clamped to it.
+	private static void pointAt(double[][] flat, double s, double[] out) {
+		double[] cum = flat[2];
+		int hi = Arrays.binarySearch(cum, s);
+		if (hi >= 0) {
+			out[0] = flat[0][hi];
+			out[1] = flat[1][hi];
+			return;
+		}
+		hi = Math.min(-hi - 1, cum.length - 1);
+		if (hi == 0) {
+			out[0] = flat[0][0];
+			out[1] = flat[1][0];
+			return;
+		}
+		int lo = hi - 1;
+		double seg = cum[hi] - cum[lo];
+		double t = seg <= 0 ? 0 : (s - cum[lo]) / seg;
+		out[0] = flat[0][lo] + (flat[0][hi] - flat[0][lo]) * t;
+		out[1] = flat[1][lo] + (flat[1][hi] - flat[1][lo]) * t;
+	}
+
+	private static double mod(double x, double m) {
+		double r = x % m;
+		return r < 0 ? r + m : r;
+	}
+
+	// The index range [first, last] of the polyline's points whose segments touch the viewport — the only
+	// stretch worth stroking. Conservative (segment bounding boxes), so it only ever includes a sliver extra;
+	// an edge that leaves and re-enters keeps its (invisible) middle, which is correct just slightly wasteful.
+	// Null when nothing touches. An O(points) walk per edge per frame, versus dashing the whole path.
+	private static int[] visibleRun(double[][] flat, Rectangle2D clip) {
+		int n = flat[0].length;
+		if (clip == null) {
+			return new int[] { 0, n - 1 };
+		}
+		double[] xs = flat[0];
+		double[] ys = flat[1];
+		int first = -1;
+		int last = -1;
+		for (int i = 0; i < n - 1; i++) {
+			double minX = Math.min(xs[i], xs[i + 1]);
+			double minY = Math.min(ys[i], ys[i + 1]);
+			double w = Math.max(xs[i], xs[i + 1]) - minX;
+			double h = Math.max(ys[i], ys[i + 1]) - minY;
+			if (clip.intersects(minX - 1, minY - 1, w + 2, h + 2)) {
+				if (first < 0) {
+					first = i;
+				}
+				last = i + 1;
+			}
+		}
+		return first < 0 ? null : new int[] { first, last };
 	}
 
 	/**
@@ -252,10 +442,13 @@ final class SceneRenderer {
 	 * to join two distant tables. Drawn every frame on top of the (undimmed) static buffer.
 	 */
 	void drawPath(Graphics2D g2, Scene scene, List<Path2D> paths, List<double[][]> flats,
-			List<Integer> pathEdges, int fromIndex, int toIndex, double flowPhase, double scale) {
+			List<Integer> pathEdges, int fromIndex, int toIndex, double flowPhase, double scale,
+			Rectangle2D visible, List<Rectangle2D> edgeBounds) {
 		g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+		double inv = 1.0 / Math.max(scale, 0.0001);
+		Rectangle2D clip = padded(visible, FLOW_CLIP_PAD * inv);
 		for (int edge : pathEdges) {
-			if (edge < 0 || edge >= paths.size()) {
+			if (edge < 0 || edge >= paths.size() || !inView(clip, edgeBounds, edge)) {
 				continue;
 			}
 			Path2D path = paths.get(edge);
@@ -267,27 +460,36 @@ final class SceneRenderer {
 			g2.draw(path);
 		}
 		// The glow + core above already mark the route; overlay the travelling dashes so the eye follows the
-		// flow direction, but only when the route is small enough to animate smoothly.
-		if (pathEdges.size() <= MAX_FLOW_EDGES) {
-			double inv = 1.0 / Math.max(scale, 0.0001);
+		// flow direction, but only when the route is small enough to animate smoothly and the view is close
+		// enough for movement to read (the static glow already marks the route when zoomed far out).
+		if (pathEdges.size() <= MAX_FLOW_EDGES && flowAnimates(scene, g2.getTransform().getScaleX())) {
 			FlowStyle brandStyle = FlowStyle.of(theme.entityHeader(), inv, flowPhase);
 			FlowStyle inferredStyle = FlowStyle.of(INFERRED, inv, flowPhase);
 			Path2D line = new Path2D.Double();
+			Path2D chevrons = new Path2D.Double();
 			for (int edge : pathEdges) {
-				if (edge < 0 || edge >= flats.size()) {
+				if (edge < 0 || edge >= flats.size() || !inView(clip, edgeBounds, edge)) {
 					continue;
 				}
 				double[][] flat = flats.get(edge);
 				if (flat == null || flat[0].length < 2) {
 					continue;
 				}
-				polyInto(line, flat);
+				int[] run = visibleRun(flat, clip);
+				if (run == null) {
+					continue;
+				}
+				polyInto(line, flat, run[0], run[1]);
+				double skipped = flat[2][run[0]];
 				boolean inferred = edge < scene.edges().size() && scene.edges().get(edge).inferred();
 				if (directionalEdges && !inferred) {
-					paintFlowDirectional(g2, line, flat, brandStyle);
+					paintFlowDirectional(g2, line, flat, brandStyle, skipped);
+					paintDashArrows(g2, chevrons, flat, run, brandStyle, directionalFlowPaint(flat));
 				}
 				else {
-					paintFlowDash(g2, line, inferred ? inferredStyle : brandStyle);
+					FlowStyle style = inferred ? inferredStyle : brandStyle;
+					paintFlowDash(g2, line, style.colors, style.strokesFrom(skipped));
+					paintDashArrows(g2, chevrons, flat, run, style, style.colors[3]);
 				}
 			}
 		}
@@ -404,6 +606,9 @@ final class SceneRenderer {
 		g2.setColor(brandSoft());
 		g2.setStroke(new BasicStroke(1f));
 		g2.drawRoundRect(x, y, w, h, 9, 9);
+		// The pill's chrome stays soft, but its text is information — full-contrast ink, not the washed-out
+		// brand blend it used to share with the border, which made the join columns genuinely hard to read.
+		g2.setColor(theme.text());
 		g2.drawString(text, x + LabelLayout.PAD_X, y + LabelLayout.PAD_Y + fm.getAscent());
 	}
 
@@ -437,10 +642,10 @@ final class SceneRenderer {
 	// highlight all share one dash pattern whose phase advances each frame, so a bright comet-like pulse marches
 	// FK → PK. The five strokes/colours are identical for every edge at a given zoom+phase, so the caller builds
 	// them once per frame ({@link FlowStyle}) and this just strokes the (reused) path five times.
-	private static void paintFlowDash(Graphics2D g2, Path2D line, FlowStyle style) {
-		for (int k = 0; k < style.strokes.length; k++) {
-			g2.setColor(style.colors[k]);
-			g2.setStroke(style.strokes[k]);
+	private static void paintFlowDash(Graphics2D g2, Path2D line, Color[] colors, Stroke[] strokes) {
+		for (int k = 0; k < strokes.length; k++) {
+			g2.setColor(colors[k]);
+			g2.setStroke(strokes[k]);
 			g2.draw(line);
 		}
 	}
@@ -450,7 +655,8 @@ final class SceneRenderer {
 	// the white-hot core stays white. {@code flat} supplies the edge's end points for the gradient.
 	private static final int[] FLOW_GLOW_ALPHA = { 48, 95, 170, 255 };
 
-	private void paintFlowDirectional(Graphics2D g2, Path2D line, double[][] flat, FlowStyle style) {
+	private void paintFlowDirectional(Graphics2D g2, Path2D line, double[][] flat, FlowStyle style,
+			double skippedLength) {
 		int n = flat[0].length;
 		double x0 = flat[0][0];
 		double y0 = flat[1][0];           // child / FK end
@@ -459,7 +665,10 @@ final class SceneRenderer {
 		boolean degenerate = Math.hypot(x1 - x0, y1 - y0) < 1.0;
 		Color warm = outboundColour();
 		Color cool = inboundColour();
-		for (int k = 0; k < style.strokes.length; k++) {
+		// The gradient spans the edge's true endpoints even when only a run of it is stroked, so the colour
+		// read at any point is identical to the unclipped edge's.
+		Stroke[] strokes = style.strokesFrom(skippedLength);
+		for (int k = 0; k < strokes.length; k++) {
 			if (k < FLOW_GLOW_ALPHA.length && !degenerate) {
 				int a = FLOW_GLOW_ALPHA[k];
 				g2.setPaint(new GradientPaint((float) x0, (float) y0, alpha(warm, a),
@@ -468,7 +677,7 @@ final class SceneRenderer {
 			else {
 				g2.setColor(style.colors[k]);   // the white-hot core (and the degenerate fallback)
 			}
-			g2.setStroke(style.strokes[k]);
+			g2.setStroke(strokes[k]);
 			g2.draw(line);
 		}
 	}
@@ -479,12 +688,24 @@ final class SceneRenderer {
 	 *  screen; the dash phase counts down within one period so the dashes travel FK → PK. */
 	private static final class FlowStyle {
 
-		final Stroke[] strokes;
 		final Color[] colors;
+		private final Stroke[] strokes;   // for a whole edge — dash phase measured from the path's start
+		private final Stroke arrowBody;   // the dashes' arrow-head chevrons, matching the dash core layers
+		private final Stroke arrowCore;
+		private final float dash;
+		private final float gap;
+		private final float phaseOffset;
+		private final double inv;
 
-		private FlowStyle(Stroke[] strokes, Color[] colors) {
+		private FlowStyle(Stroke[] strokes, Color[] colors, float dash, float gap, float phaseOffset, double inv) {
 			this.strokes = strokes;
 			this.colors = colors;
+			this.dash = dash;
+			this.gap = gap;
+			this.phaseOffset = phaseOffset;
+			this.inv = inv;
+			this.arrowBody = new BasicStroke((float) (2.6 * inv), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
+			this.arrowCore = new BasicStroke((float) (1.2 * inv), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
 		}
 
 		static FlowStyle of(Color base, double inv, double phase) {
@@ -492,28 +713,49 @@ final class SceneRenderer {
 			float gap = (float) (9 * inv);
 			float period = dash + gap;
 			float phaseOffset = (float) (period - ((phase * 1.8 * inv) % period));
+			Stroke[] strokes = strokes(inv, dash, gap, phaseOffset);
+			Color[] colors = {
+				alpha(base, 48), alpha(base, 95), alpha(base, 170), base, new Color(255, 255, 255, 235),
+			};
+			return new FlowStyle(strokes, colors, dash, gap, phaseOffset, inv);
+		}
+
+		/**
+		 * The strokes for a subpath starting {@code startLength} into its edge: the dash phase advances by
+		 * the skipped arc length, so a viewport-clipped run's dashes land exactly where the full edge's
+		 * would — clipping never makes a comet jump. Zero start returns the per-frame shared strokes.
+		 */
+		Stroke[] strokesFrom(double startLength) {
+			if (startLength <= 0) {
+				return strokes;
+			}
+			return strokes(inv, dash, gap, (float) ((phaseOffset + startLength) % (dash + gap)));
+		}
+
+		private static Stroke[] strokes(double inv, float dash, float gap, float phaseOffset) {
 			float[] pattern = { dash, gap };
-			Stroke[] strokes = {
+			return new Stroke[] {
 				new BasicStroke((float) (9.0 * inv), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND),
 				new BasicStroke((float) (5.0 * inv), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND),
 				new BasicStroke((float) (4.6 * inv), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 10f, pattern, phaseOffset),
 				new BasicStroke((float) (2.8 * inv), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 10f, pattern, phaseOffset),
 				new BasicStroke((float) (1.2 * inv), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 10f, pattern, phaseOffset),
 			};
-			Color[] colors = {
-				alpha(base, 48), alpha(base, 95), alpha(base, 170), base, new Color(255, 255, 255, 235),
-			};
-			return new FlowStyle(strokes, colors);
 		}
 	}
 
 	// Rebuilds the reusable polyline path from a flattened curve (x[], y[], …) — reset + retrace, no allocation.
 	private static void polyInto(Path2D p, double[][] poly) {
+		polyInto(p, poly, 0, poly[0].length - 1);
+	}
+
+	// As above, but only the points from..to (inclusive) — the viewport-visible run of a long edge.
+	private static void polyInto(Path2D p, double[][] poly, int from, int to) {
 		double[] xs = poly[0];
 		double[] ys = poly[1];
 		p.reset();
-		p.moveTo(xs[0], ys[0]);
-		for (int i = 1; i < xs.length; i++) {
+		p.moveTo(xs[from], ys[from]);
+		for (int i = from + 1; i <= to; i++) {
 			p.lineTo(xs[i], ys[i]);
 		}
 	}
@@ -625,7 +867,9 @@ final class SceneRenderer {
 			}
 			text = text + "…";
 		}
-		g2.setColor(theme.muted());
+		// Quiet, but readable: lean toward the theme's ink rather than pure muted, which sat too close to the
+		// background on most palettes to read at a glance.
+		g2.setColor(mix(theme.text(), theme.muted(), 0.4f));
 		g2.drawString(text, x + 6, y - 7);
 	}
 

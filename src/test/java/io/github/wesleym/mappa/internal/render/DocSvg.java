@@ -65,7 +65,7 @@ final class DocSvg {
 				: scene.tables().stream().filter(t -> t.name().equals(active)).findFirst().orElse(null);
 		renderer.draw(svg, scene, geometry, paths, labelRects, box, active, -1, labels, null);
 		if (box != null) {
-			renderer.drawFlow(svg, scene, flats, box, 34.0, 1.0);   // a frozen flow, so the spotlight reads as live
+			renderer.drawFlow(svg, scene, flats, box, 34.0, 1.0, null, null);   // a frozen flow, so the spotlight reads as live
 		}
 		Map<String, Rectangle2D> boxes = new java.util.LinkedHashMap<>();
 		for (EntityBox t : scene.tables()) {

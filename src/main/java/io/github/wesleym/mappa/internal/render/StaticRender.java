@@ -12,6 +12,7 @@ import io.github.wesleym.mappa.internal.layout.EdgeRouter;
 import io.github.wesleym.mappa.internal.layout.EdgeStyle;
 import io.github.wesleym.mappa.internal.layout.LabelLayout;
 import io.github.wesleym.mappa.internal.layout.LayoutStyle;
+import io.github.wesleym.mappa.internal.common.Fonts;
 import io.github.wesleym.mappa.internal.community.CommunityNames;
 import io.github.wesleym.mappa.internal.model.EntityBox;
 import io.github.wesleym.mappa.internal.model.Link;
@@ -43,8 +44,19 @@ import java.util.function.Consumer;
 public final class StaticRender {
 
 	private static final int MARGIN = 48;
-	static final Font TITLE_FONT = new Font(Font.SANS_SERIF, Font.BOLD, 13);
-	static final Font ROW_FONT = new Font(Font.MONOSPACED, Font.PLAIN, 12);
+
+	// The diagram fonts for a map: the bundled faces (Inter titles, JetBrains Mono rows — identical on every
+	// platform) unless the map's text needs glyphs outside the bundled coverage, where the logical fonts'
+	// system glyph fallback takes over. Chosen per map, as one pair, so a diagram never mixes the two worlds.
+	record DiagramFonts(Font title, Font row) {
+		static DiagramFonts of(MappaMap map) {
+			if (Fonts.covers(map)) {
+				return new DiagramFonts(Fonts.sansSemiBold(13f), Fonts.mono(12f));
+			}
+			return new DiagramFonts(new Font(Font.SANS_SERIF, Font.BOLD, 13),
+					new Font(Font.MONOSPACED, Font.PLAIN, 12));
+		}
+	}
 
 	private StaticRender() { }
 
@@ -63,10 +75,11 @@ public final class StaticRender {
 			g.fillRect(0, 0, width, height);
 		}
 
+		DiagramFonts fonts = DiagramFonts.of(map);
 		SceneBuilder.TextWidth textWidth = (t, f) -> g.getFontMetrics(f).stringWidth(t);
 		boolean labels = options.relationshipLabels();
 		boolean keysOnly = keysOnly(map, options.detail());
-		Scene scene = SceneBuilder.build(map, TITLE_FONT, ROW_FONT, textWidth, labels, false, keysOnly,
+		Scene scene = SceneBuilder.build(map, fonts.title(), fonts.row(), textWidth, labels, false, keysOnly,
 				layoutStyle(map, options.layout()));
 
 		List<EdgeRouter.EdgeGeometry> geometry = EdgeRouter.route(scene);
@@ -76,7 +89,7 @@ public final class StaticRender {
 			paths.add(edgeStyle.path(eg.waypoints(), eg.startHorizontal(), eg.endHorizontal()));
 		}
 		Map<Integer, LabelLayout.Placed> labelRects = labels
-				? LabelLayout.layout(scene, paths, g.getFontMetrics(ROW_FONT), Map.of())
+				? LabelLayout.layout(scene, paths, g.getFontMetrics(fonts.row()), Map.of())
 				: Map.of();
 
 		Rectangle2D world = scene.worldBounds();
@@ -86,7 +99,7 @@ public final class StaticRender {
 		double zoom = Math.min(1.0, Math.min((width - MARGIN * 2) / Math.max(1, world.getWidth()),
 				(height - MARGIN * 2) / Math.max(1, world.getHeight())));
 
-		SceneRenderer renderer = new SceneRenderer(theme, TITLE_FONT, ROW_FONT);
+		SceneRenderer renderer = new SceneRenderer(theme, fonts.title(), fonts.row());
 		renderer.setDirectionalEdges(edgeStyle == EdgeStyle.DIRECTIONAL);
 		renderer.setClusterNames(clusterNames(scene));   // named community regions on large schemas
 
@@ -102,7 +115,8 @@ public final class StaticRender {
 	private static final int EXPORT_MARGIN = 24;
 
 	private record Export(Scene scene, List<EdgeRouter.EdgeGeometry> geometry, List<Path2D> paths,
-			Map<Integer, LabelLayout.Placed> labelRects, Rectangle2D world, boolean labels, EdgeStyle edgeStyle) { }
+			Map<Integer, LabelLayout.Placed> labelRects, Rectangle2D world, boolean labels, EdgeStyle edgeStyle,
+			DiagramFonts fonts) { }
 
 	// The full-map export scene: every field shown (capHeights = false), edges routed, world grown to include
 	// edge curves (self-loops dip past the box bounds) so nothing is clipped.
@@ -110,9 +124,10 @@ public final class StaticRender {
 		BufferedImage probe = new BufferedImage(4, 4, BufferedImage.TYPE_INT_ARGB);
 		Graphics2D pg = probe.createGraphics();
 		try {
+			DiagramFonts fonts = DiagramFonts.of(map);
 			SceneBuilder.TextWidth textWidth = (t, f) -> pg.getFontMetrics(f).stringWidth(t);
 			boolean labels = options.relationshipLabels();
-			Scene scene = SceneBuilder.build(map, TITLE_FONT, ROW_FONT, textWidth, labels, false,
+			Scene scene = SceneBuilder.build(map, fonts.title(), fonts.row(), textWidth, labels, false,
 					keysOnly(map, options.detail()), layoutStyle(map, options.layout()));
 			List<EdgeRouter.EdgeGeometry> geometry = EdgeRouter.route(scene);
 			EdgeStyle edgeStyle = edgeStyle(options.edges());
@@ -127,9 +142,9 @@ public final class StaticRender {
 				world = world.createUnion(p.getBounds2D());
 			}
 			Map<Integer, LabelLayout.Placed> labelRects = labels
-					? LabelLayout.layout(scene, paths, pg.getFontMetrics(ROW_FONT), Map.of())
+					? LabelLayout.layout(scene, paths, pg.getFontMetrics(fonts.row()), Map.of())
 					: Map.of();
-			return new Export(scene, geometry, paths, labelRects, world, labels, edgeStyle);
+			return new Export(scene, geometry, paths, labelRects, world, labels, edgeStyle, fonts);
 		}
 		finally {
 			pg.dispose();
@@ -148,7 +163,7 @@ public final class StaticRender {
 			svg.fillRect(0, 0, width, height);
 		}
 		svg.translate(EXPORT_MARGIN - world.getX(), EXPORT_MARGIN - world.getY());
-		SceneRenderer renderer = new SceneRenderer(theme, TITLE_FONT, ROW_FONT);
+		SceneRenderer renderer = new SceneRenderer(theme, e.fonts().title(), e.fonts().row());
 		renderer.setDirectionalEdges(e.edgeStyle() == EdgeStyle.DIRECTIONAL);
 		renderer.setClusterNames(clusterNames(e.scene()));
 		renderer.draw(svg, e.scene(), e.geometry(), e.paths(), e.labelRects(), null, null, -1, e.labels(), null);
@@ -168,7 +183,7 @@ public final class StaticRender {
 			svg.fillRect(0, 0, width, height);
 		}
 		svg.translate(EXPORT_MARGIN - world.getX(), EXPORT_MARGIN - world.getY());
-		SceneRenderer renderer = new SceneRenderer(theme, TITLE_FONT, ROW_FONT);
+		SceneRenderer renderer = new SceneRenderer(theme, e.fonts().title(), e.fonts().row());
 		renderer.setDirectionalEdges(e.edgeStyle() == EdgeStyle.DIRECTIONAL);
 		renderer.setClusterNames(clusterNames(e.scene()));
 		renderer.draw(svg, e.scene(), e.geometry(), e.paths(), e.labelRects(), null, null, -1, e.labels(), null);
