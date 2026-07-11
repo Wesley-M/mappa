@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.awt.image.BufferedImage;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -15,14 +16,18 @@ class MappaComponentTest {
 	void componentExposesViewportControls() {
 		MappaComponent component = Mappa.view(Fixtures.commerce()).component();
 		assertNotNull(component);
+		assertFalse(component.isAnimating(), "live diagram motion is opt-in");
 		component.setSize(1000, 700);
 		// The controls drive the live viewport; they must be safe to call at any time (before a first paint too).
 		assertDoesNotThrow(() -> {
 			component.zoomIn();
 			component.zoomOut();
 			component.fitView();
-			component.setAnimating(false);
 			component.setAnimating(true);
+			assertTrue(component.isAnimating());
+			component.setAnimating(false);
+			assertFalse(component.isAnimating());
+			component.refreshSurface();
 		});
 	}
 

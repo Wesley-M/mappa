@@ -47,6 +47,7 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.awt.geom.AffineTransform;
+import java.awt.geom.Area;
 import java.awt.geom.Path2D;
 import java.awt.geom.Point2D;
 import java.awt.geom.Rectangle2D;
@@ -246,6 +247,9 @@ final class MappaCanvas extends JComponent {
 	private boolean armScheduled;
 	private final Timer armResize = new Timer(400, e -> resizeArmed = true);
 	private Timer cameraTimer;   // eases the viewport when framing a clicked table's neighbourhood
+	private double cameraTargetScale;
+	private double cameraTargetX;
+	private double cameraTargetY;
 
 	MappaCanvas(MappaTheme theme) {
 		this.theme = theme;
@@ -546,10 +550,12 @@ final class MappaCanvas extends JComponent {
 		paths = base;
 		List<double[][]> flats = new ArrayList<>(base.size());
 		List<Rectangle2D> bounds = new ArrayList<>(base.size());
+		double flatness = flattenFlatness();
 		for (Path2D p : base) {
-			flats.add(SceneRenderer.flatten(p));
+			flats.add(SceneRenderer.flatten(p, flatness));
 			bounds.add(p.getBounds2D());   // cached once; the banded re-bake reuses it instead of recomputing per band
 		}
+		flattenedFor = effectiveScale();
 		flatPaths = flats;
 		edgeBounds = bounds;
 		joinLabelRects = showJoinColumns && draggingIndex < 0
@@ -596,7 +602,7 @@ final class MappaCanvas extends JComponent {
 			Path2D bent = bentPath(geometry.get(edge), pt);
 			paths.set(edge, bent);
 			if (edge < flatPaths.size()) {
-				flatPaths.set(edge, SceneRenderer.flatten(bent));
+				flatPaths.set(edge, SceneRenderer.flatten(bent, flattenFlatness()));
 			}
 		}
 		String text = scene.edges().get(edge).joinLabel();
@@ -675,6 +681,7 @@ final class MappaCanvas extends JComponent {
 			onViewChanged.run();
 		}
 		ensureGeometry();
+		refreshFlatsForScale();
 
 		// The static buffer is rendered at device resolution with a margin around the viewport, so a pan can
 		// just blit the cached pixels shifted (no re-render) until it drifts past the margin or settles —
@@ -743,12 +750,17 @@ final class MappaCanvas extends JComponent {
 			renderer.drawDragged(overlay, scene, geometry, paths, draggingIndex, focusTable);
 		}
 		else if (!pathEdges.isEmpty()) {
-			renderer.drawPath(overlay, scene, paths, flatPaths, pathEdges, pathFrom, pathTo, flowPhase, scale,
-					visibleWorld(0), edgeBounds);
+			Graphics2D trail = trailGraphics(overlay);
+			renderer.drawPath(trail, scene, paths, flatPaths, pathEdges, pathFrom, pathTo,
+					animating ? flowPhase : 0, scale, visibleWorld(0), edgeBounds);
+			trail.dispose();
 			renderer.drawJoinLabelsOver(overlay, scene, joinLabelRects, pathEdges);   // comets below the hints
 		}
 		else if (active != null) {
-			renderer.drawFlow(overlay, scene, flatPaths, active, flowPhase, scale, visibleWorld(0), edgeBounds);
+			Graphics2D trail = trailGraphics(overlay);
+			renderer.drawFlow(trail, scene, flatPaths, active, animating ? flowPhase : 0, scale,
+					visibleWorld(0), edgeBounds);
+			trail.dispose();
 			renderer.drawJoinLabelsOver(overlay, scene, joinLabelRects, edgesTouching(active));   // flow below the hints
 		}
 		overlay.dispose();
@@ -760,6 +772,7 @@ final class MappaCanvas extends JComponent {
 			overlayPlaceholder(g);
 		}
 	}
+
 
 	// ---- overview minimap ----------------------------------------------------------------------------
 
@@ -851,18 +864,27 @@ final class MappaCanvas extends JComponent {
 		g2.dispose();
 	}
 
-	// Aims the camera at the world point under a minimap click/drag — the follow tween glides there, so the
-	// outside diagram moves cinematically instead of snapping frame to frame.
+	// Aims the camera at the world point under a minimap click/drag. Motion is optional: when disabled the
+	// viewport lands at the requested point immediately instead of tweening behind the pointer.
 	private void navigateFromMinimap(Point at, MiniView mv) {
 		double worldX = mv.toWorldX(at.x);
 		double worldY = mv.toWorldY(at.y);
 		followCameraTo(getWidth() / 2.0 - scale * worldX, getHeight() / 2.0 - scale * worldY);
 	}
 
-	// Cinematic pan: ease the viewport toward a target offset each frame rather than jumping to it.
+	// Cinematic pan when enabled; otherwise land immediately so the minimap stays direct and predictable.
 	private void followCameraTo(double targetX, double targetY) {
 		followTargetX = targetX;
 		followTargetY = targetY;
+		if (!animating || LightweightMode.isOn()) {
+			cameraFollow.stop();
+			offsetX = targetX;
+			offsetY = targetY;
+			bufferDirty = true;
+			repaint();
+			onViewChanged.run();
+			return;
+		}
 		if (!cameraFollow.isRunning()) {
 			cameraFollow.start();
 		}
@@ -1390,6 +1412,28 @@ final class MappaCanvas extends JComponent {
 		}
 	}
 
+	// The overlay graphics the chevron/dash trails draw through. While motion is OFF the trails are static —
+	// effectively part of the scene — so they must hide behind table boxes exactly as their edges do: clip
+	// them against the viewport minus every visible box. While animating, the moving pulse keeps its historic
+	// draw-over-everything pass (it's transient, and re-clipping every 33ms frame would cost more than it says).
+	private Graphics2D trailGraphics(Graphics2D overlay) {
+		Graphics2D trail = (Graphics2D) overlay.create();
+		if (animating) {
+			return trail;
+		}
+		Rectangle2D view = visibleWorld(32);
+		Area area = new Area(view);
+		for (EntityBox table : scene.tables()) {
+			Rectangle2D b = table.bounds();
+			if (b.intersects(view)) {
+				area.subtract(new Area(new RoundRectangle2D.Double(b.getX(), b.getY(), b.getWidth(),
+						b.getHeight(), BoxMetrics.CORNER, BoxMetrics.CORNER)));
+			}
+		}
+		trail.clip(area);
+		return trail;
+	}
+
 	/** The viewport (plus a margin) in world coordinates — what the buffer covers, for render culling. */
 	private Rectangle2D visibleWorld(int margin) {
 		return new Rectangle2D.Double((-offsetX - margin) / scale, (-offsetY - margin) / scale,
@@ -1751,10 +1795,14 @@ final class MappaCanvas extends JComponent {
 		if (cameraTimer != null && cameraTimer.isRunning()) {
 			cameraTimer.stop();
 		}
+		cameraTargetScale = target;
+		cameraTargetX = targetX;
+		cameraTargetY = targetY;
 		if (Math.abs(dScale) < 1e-4 && Math.hypot(dX, dY) < 1) {
 			return;   // already framed
 		}
-		if (LightweightMode.isOn() || shouldJumpCamera(getWidth(), getHeight(), startScale, target, dX, dY)) {
+		if (!animating || LightweightMode.isOn()
+				|| shouldJumpCamera(getWidth(), getHeight(), startScale, target, dX, dY)) {
 			moveCameraTo(target, targetX, targetY);   // long jumps feel faster and avoid many stale-buffer blits
 			updateFlowTimer();
 			return;
@@ -1823,6 +1871,13 @@ final class MappaCanvas extends JComponent {
 		repaint();
 	}
 
+	// Drops the click-spotlight and any traced join path — the diagram returns to its calm whole-scene state.
+	// Hosts call this when the diagram's tab is hidden, so a stale selection never greets the reader on return.
+	void clearHighlight() {
+		clearPath();
+		setActive(null);
+	}
+
 	private void clearPath() {
 		if (pathEdges.isEmpty()) {
 			return;
@@ -1859,6 +1914,34 @@ final class MappaCanvas extends JComponent {
 	}
 
 	// The display's HiDPI factor — the same device zoom the renderer's LOD sees, for gating outside a paint.
+	// The chevron/comet trails ride the flattened polylines. Flatness is a world-unit tolerance, so what is
+	// sub-pixel at 1:1 becomes a visible gap between trail and stroked spline once zoomed in — re-flatten
+	// finer as the view closes in (and coarser again zoomed out, keeping the polylines cheap).
+	private double flattenedFor = 1;
+
+	private double effectiveScale() {
+		return Math.max(1, scale * deviceScale());
+	}
+
+	private double flattenFlatness() {
+		return 1.5 / effectiveScale();
+	}
+
+	private void refreshFlatsForScale() {
+		double effective = effectiveScale();
+		double ratio = effective / flattenedFor;
+		if (ratio < 1.4 && ratio > 0.7) {
+			return;   // still within tolerance of the zoom the polylines were flattened for
+		}
+		List<double[][]> flats = new ArrayList<>(paths.size());
+		double flatness = flattenFlatness();
+		for (Path2D p : paths) {
+			flats.add(SceneRenderer.flatten(p, flatness));
+		}
+		flatPaths = flats;
+		flattenedFor = effective;
+	}
+
 	private double deviceScale() {
 		GraphicsConfiguration gc = getGraphicsConfiguration();
 		return gc == null ? 1.0 : gc.getDefaultTransform().getScaleX();
@@ -1903,14 +1986,62 @@ final class MappaCanvas extends JComponent {
 		return new Point2D.Double((screen.x - offsetX) / scale, (screen.y - offsetY) / scale);
 	}
 
-	// A host can pause the decorative edge-flow animation (e.g. while the diagram's tab is off-screen) without
-	// tearing down the component. The spotlight/dim state is untouched; only the particle ticker stops.
-	private boolean animating = true;
+	// Motion is opt-in. The selected state and relationship highlight always remain; this switch only governs
+	// decorative flow and viewport transitions, so a still diagram stays fully interactive.
+	private boolean animating;
 
 	void setAnimating(boolean value) {
 		if (animating != value) {
 			animating = value;
+			if (!value) {
+				settleMotion();
+			}
 			updateFlowTimer();
+		}
+	}
+
+	boolean isAnimating() {
+		return animating;
+	}
+
+	// A hidden tab can resume after its cached buffer was baked under a different peer layout or after a view
+	// transition was interrupted. Keep the reader's viewport and selection, but always re-bake those pixels.
+	void refreshSurface() {
+		if (disposed) {
+			return;
+		}
+		resizing = false;
+		resizeRedraw.stop();
+		placeholderFade.stop();
+		placeholderAlpha = 0f;
+		placeholderTarget = 0f;
+		resizeArmed = false;
+		armScheduled = false;
+		armResize.stop();
+		viewSettle.stop();
+		bufferDirty = true;
+		revalidate();
+		repaint();
+	}
+
+	// Finish an in-flight transition at its requested destination before disabling motion, rather than leaving
+	// the viewport stranded part-way through a glide.
+	private void settleMotion() {
+		if (zoomGlide.isRunning()) {
+			zoomGlide.stop();
+			zoomTo(zoomPivot, zoomTargetScale);
+		}
+		if (cameraFollow.isRunning()) {
+			cameraFollow.stop();
+			offsetX = followTargetX;
+			offsetY = followTargetY;
+			bufferDirty = true;
+			repaint();
+			onViewChanged.run();
+		}
+		if (cameraTimer != null && cameraTimer.isRunning()) {
+			cameraTimer.stop();
+			moveCameraTo(cameraTargetScale, cameraTargetX, cameraTargetY);
 		}
 	}
 
@@ -1949,7 +2080,7 @@ final class MappaCanvas extends JComponent {
 		double base = zoomGlide.isRunning() ? zoomTargetScale : scale;
 		zoomTargetScale = clampScale(base * factor);
 		zoomPivot = pivot;
-		if (LightweightMode.isOn()) {
+		if (!animating || LightweightMode.isOn()) {
 			zoomGlide.stop();
 			zoomTo(zoomPivot, zoomTargetScale);   // no animation in lightweight mode — land in one step
 			return;

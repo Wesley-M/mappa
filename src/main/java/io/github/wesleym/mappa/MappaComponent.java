@@ -41,12 +41,34 @@ public final class MappaComponent extends JComponent {
 	}
 
 	/**
-	 * Turns the decorative edge-flow animation on or off. A host can pause it while the component is hidden
-	 * (a background tab) so it doesn't tick unseen, and resume it when shown; the spotlight and everything
-	 * else stay put. On by default.
+	 * Turns live diagram motion on or off. When disabled, relationship flow, camera transitions, and stepped
+	 * zoom changes settle immediately. It is off by default; a host can opt in for a surface where motion helps
+	 * orient the reader, and pause it again while the component is hidden.
 	 */
 	public void setAnimating(boolean animating) {
 		StaticRender.setAnimating(surface, animating);
+	}
+
+	/** Whether live diagram motion is currently enabled. New components start with it disabled. */
+	public boolean isAnimating() {
+		return StaticRender.isAnimating(surface);
+	}
+
+	/**
+	 * Rebuilds the live pixels after a host restores this component from a hidden tab. The viewport, selection,
+	 * and hand-arranged tables are retained; only transient cached rendering is discarded.
+	 */
+	public void refreshSurface() {
+		StaticRender.refreshSurface(surface);
+	}
+
+	/**
+	 * Drops the click-spotlight and any traced join path, returning the diagram to its calm whole-scene state.
+	 * Hosts typically call this when the component's tab is hidden, so a stale selection never greets the
+	 * reader on return.
+	 */
+	public void clearHighlight() {
+		StaticRender.clearHighlight(surface);
 	}
 
 	/**

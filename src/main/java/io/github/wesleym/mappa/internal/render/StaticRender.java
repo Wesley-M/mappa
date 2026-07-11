@@ -229,6 +229,18 @@ public final class StaticRender {
 		((MappaCanvas) liveCanvas).setAnimating(animating);
 	}
 
+	public static boolean isAnimating(JComponent liveCanvas) {
+		return ((MappaCanvas) liveCanvas).isAnimating();
+	}
+
+	public static void clearHighlight(JComponent liveCanvas) {
+		((MappaCanvas) liveCanvas).clearHighlight();
+	}
+
+	public static void refreshSurface(JComponent liveCanvas) {
+		((MappaCanvas) liveCanvas).refreshSurface();
+	}
+
 	// Live option changes for the MappaComponent facade — applied to the running canvas without a rebuild, so the
 	// diagram re-flows in place (and keeps its viewport where it can). AUTO options resolve against the live map.
 	public static void setMap(JComponent liveCanvas, MappaMap map) {

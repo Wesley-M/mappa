@@ -763,9 +763,15 @@ final class SceneRenderer {
 	// Flattens a curve into a polyline (x[], y[], cumulative-length[]); null when degenerate. Computed once
 	// per geometry change by the caller and cached, so the animation never re-flattens per frame.
 	static double[][] flatten(Path2D path) {
+		return flatten(path, 1.5);
+	}
+
+	// Flatness is in world units: what reads as sub-pixel at 1:1 becomes a visible gap between the chevron
+	// trail and its stroked spline once the view zooms in, so the caller re-flattens finer as it zooms.
+	static double[][] flatten(Path2D path, double flatness) {
 		List<double[]> points = new ArrayList<>();
 		double[] coords = new double[6];
-		for (PathIterator it = path.getPathIterator(null, 1.5); !it.isDone(); it.next()) {
+		for (PathIterator it = path.getPathIterator(null, flatness); !it.isDone(); it.next()) {
 			if (it.currentSegment(coords) != PathIterator.SEG_CLOSE) {
 				points.add(new double[] { coords[0], coords[1] });
 			}
