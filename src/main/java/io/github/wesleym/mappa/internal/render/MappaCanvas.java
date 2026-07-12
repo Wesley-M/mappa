@@ -47,7 +47,6 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.awt.geom.AffineTransform;
-import java.awt.geom.Area;
 import java.awt.geom.Path2D;
 import java.awt.geom.Point2D;
 import java.awt.geom.Rectangle2D;
@@ -1412,26 +1411,14 @@ final class MappaCanvas extends JComponent {
 		}
 	}
 
-	// The overlay graphics the chevron/dash trails draw through. While motion is OFF the trails are static —
-	// effectively part of the scene — so they must hide behind table boxes exactly as their edges do: clip
-	// them against the viewport minus every visible box. While animating, the moving pulse keeps its historic
-	// draw-over-everything pass (it's transient, and re-clipping every 33ms frame would cost more than it says).
+	// The overlay graphics the chevron/dash trails draw through — an isolated copy, so the trails' stroke and
+	// composite churn never leaks into the join-label hints painted after them. The trails draw over the table
+	// cards in both modes: a lit edge is promoted above the boxes in the scene buffer (see SceneRenderer.draw),
+	// so its chevrons — travelling or, with motion off, static — must ride the same z-order, or the highlight
+	// would appear to sink behind any card the edge crosses. (This used to clip static trails against the
+	// viewport minus every box, back when lit edges themselves hid behind the cards.)
 	private Graphics2D trailGraphics(Graphics2D overlay) {
-		Graphics2D trail = (Graphics2D) overlay.create();
-		if (animating) {
-			return trail;
-		}
-		Rectangle2D view = visibleWorld(32);
-		Area area = new Area(view);
-		for (EntityBox table : scene.tables()) {
-			Rectangle2D b = table.bounds();
-			if (b.intersects(view)) {
-				area.subtract(new Area(new RoundRectangle2D.Double(b.getX(), b.getY(), b.getWidth(),
-						b.getHeight(), BoxMetrics.CORNER, BoxMetrics.CORNER)));
-			}
-		}
-		trail.clip(area);
-		return trail;
+		return (Graphics2D) overlay.create();
 	}
 
 	/** The viewport (plus a margin) in world coordinates — what the buffer covers, for render culling. */
