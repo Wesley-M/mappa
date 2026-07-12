@@ -339,6 +339,99 @@ class SceneRendererTest {
 		ImageIO.write(img, "png", new File(dir, "spotlight-smoke.png"));
 	}
 
+	// Regression: a highlighted (active table's) edge that runs behind another table must stay visible over that
+	// card — not be swallowed by its opaque fill. The edge is rerouted straight through an occluding table's body,
+	// then, with that table active, the occluder's centre must carry the bright highlight colour rather than the
+	// card surface. Without the "promote active edges above the boxes" pass this fails: the fill wins.
+	@Test
+	void highlightedEdgeDrawsOverATableItPassesBehind() {
+		Prepared p = prepare(scene(commerce(), false));
+		Scene s = p.scene();
+		EntityBox active = s.tables().stream().filter(t -> t.name().equals("orders")).findFirst().orElseThrow();
+		int activeIndex = s.tables().indexOf(active);
+
+		int edgeIndex = -1;
+		for (int i = 0; i < s.edges().size(); i++) {
+			if (s.edges().get(i).from() == activeIndex || s.edges().get(i).to() == activeIndex) {
+				edgeIndex = i;
+				break;
+			}
+		}
+		assertTrue(edgeIndex >= 0, "the active table has at least one edge");
+
+		var edge = s.edges().get(edgeIndex);
+		EntityBox occluder = null;
+		for (int i = 0; i < s.tables().size(); i++) {
+			if (i != edge.from() && i != edge.to()) {
+				occluder = s.tables().get(i);
+				break;
+			}
+		}
+		assertTrue(occluder != null, "a non-endpoint table exists to occlude the edge");
+		Rectangle2D box = occluder.bounds();
+		Rectangle2D from = active.bounds();
+
+		// Reroute this one edge straight from the active table through the occluder's centre, so it must pass
+		// behind that card. Geometry (crow's feet) is left untouched — only the stroked path z-order is under test.
+		Path2D through = new Path2D.Double();
+		through.moveTo(from.getCenterX(), from.getCenterY());
+		through.lineTo(box.getCenterX(), box.getCenterY());
+		List<Path2D> paths = new ArrayList<>(p.paths());
+		paths.set(edgeIndex, through);
+
+		MappaTheme theme = MappaTheme.dark();
+		Rectangle2D world = s.worldBounds();
+		int ox = (int) (80 - world.getX());
+		int oy = (int) (80 - world.getY());
+		BufferedImage img = new BufferedImage((int) world.getWidth() + 160, (int) world.getHeight() + 160,
+				BufferedImage.TYPE_INT_RGB);
+		Graphics2D g = img.createGraphics();
+		g.setColor(theme.background());
+		g.fillRect(0, 0, img.getWidth(), img.getHeight());
+		g.translate(ox, oy);
+		SceneRenderer renderer = new SceneRenderer(theme, TITLE, ROW);
+		renderer.draw(g, s, p.geometry(), paths, p.labels(), active, "orders", -1, false, null);
+		g.dispose();
+
+		// Walk the run of the edge that lies inside the occluder's body and take the pixel that best matches the
+		// highlight; it must read as the highlight (entityHeader), not the card surface.
+		double ax = from.getCenterX();
+		double ay = from.getCenterY();
+		int highlight = theme.entityHeader().getRGB();
+		int surface = theme.surface().getRGB();
+		int best = Integer.MAX_VALUE;
+		for (double t = 0.5; t <= 1.0; t += 0.02) {
+			double wx = ax + (box.getCenterX() - ax) * t;
+			double wy = ay + (box.getCenterY() - ay) * t;
+			if (!box.contains(wx, wy)) {
+				continue;
+			}
+			for (int dy = -1; dy <= 1; dy++) {
+				for (int dx = -1; dx <= 1; dx++) {
+					int px = (int) Math.round(wx) + ox + dx;
+					int py = (int) Math.round(wy) + oy + dy;
+					best = Math.min(best, channelDistance(img.getRGB(px, py), highlight));
+				}
+			}
+		}
+		assertTrue(best != Integer.MAX_VALUE, "the edge run crosses the occluder's body");
+		assertTrue(best <= 24, "the highlighted edge is drawn over the table (closest highlight-channel delta "
+				+ best + ")");
+		assertTrue(best < channelDistanceToSelf(surface, highlight),
+				"the crossing reads as the highlight, not the card surface");
+	}
+
+	private static int channelDistance(int a, int b) {
+		return Math.abs(((a >> 16) & 0xFF) - ((b >> 16) & 0xFF))
+				+ Math.abs(((a >> 8) & 0xFF) - ((b >> 8) & 0xFF))
+				+ Math.abs((a & 0xFF) - (b & 0xFF));
+	}
+
+	// Distance between the surface tone and the highlight — the margin the crossing pixel must beat.
+	private static int channelDistanceToSelf(int surface, int highlight) {
+		return channelDistance(surface, highlight);
+	}
+
 	@Test
 	void communityRegionPanelsAndLabelsRender() {
 		Scene scene = scene(twoClusters(), false);

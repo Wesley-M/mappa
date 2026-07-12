@@ -190,6 +190,24 @@ final class SceneRenderer {
 			}
 			paintTable(g2, tables.get(i), !hovering || activeBoxes.contains(i), hovered, focusTable, zoom);
 		}
+		// Promote a lit table's own edges above the boxes. Every edge — the active one included — was stroked in
+		// the pass above, behind the tables; an opaque card (see paintTable's fill) then swallows the highlight
+		// wherever a lit relationship runs behind another table. Re-stroking just the active edges here keeps the
+		// selection legible over the cards. This is the static counterpart to the flow overlay, which can't stand
+		// in for it — it draws only intermittent dashes and switches off when zoomed out or when many edges are lit.
+		if (hovering) {
+			for (int i = 0; i < paths.size(); i++) {
+				if (!activeEdge[i] || touches(edges.get(i), excluded) || !edgeVisible[i]) {
+					continue;
+				}
+				boolean inferred = edges.get(i).inferred();
+				applyEdgeStyle(g2, true, true, inferred, inferred);
+				if (directionalEdges && !inferred) {
+					g2.setPaint(directionalGradient(geometry.get(i), false));
+				}
+				g2.draw(paths.get(i));
+			}
+		}
 		// Crow's-foot decorations go on top of the boxes so they're never painted over (and follow the same
 		// far-zoom edge LOD — no feet where the edge itself isn't drawn).
 		for (int i = 0; i < geometry.size(); i++) {
