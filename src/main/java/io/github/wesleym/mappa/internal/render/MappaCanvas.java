@@ -732,7 +732,12 @@ final class MappaCanvas extends JComponent {
 		}
 
 		Graphics2D blit = (Graphics2D) g.create();
-		blit.setTransform(new AffineTransform());
+		// Address device pixels while keeping the graphics' device origin: tx/ty are relative to this
+		// component's corner, and on a partial repaint (floating chrome over the canvas repainting just its
+		// own patch) the incoming device origin is the dirty region's corner, not the component's. Only the
+		// HiDPI scale is dropped, so the buffer blits pixel-for-pixel wherever the repaint started.
+		AffineTransform device = blit.getTransform();
+		blit.setTransform(new AffineTransform(1, 0, 0, 1, device.getTranslateX(), device.getTranslateY()));
 		if (f != 1.0) {
 			blit.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
 		}
