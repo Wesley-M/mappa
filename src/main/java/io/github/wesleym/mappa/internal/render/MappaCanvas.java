@@ -612,6 +612,17 @@ final class MappaCanvas extends JComponent {
 		bufferDirty = true;
 	}
 
+	// The table menu lives detached from any window until shown, so a host look-and-feel switch — which
+	// sweeps window trees — never reaches it. Refreshing it whenever this canvas's own UI is refreshed
+	// keeps the menu on the host's current theme. (Null while the superclass constructor runs.)
+	@Override
+	public void updateUI() {
+		super.updateUI();
+		if (tableMenu != null) {
+			SwingUtilities.updateComponentTreeUI(tableMenu);
+		}
+	}
+
 	// Rebuilt whenever the host actions change: items in registration order, a null-handler entry drawn as a
 	// divider (never leading, so a menu doesn't open on a rule).
 	private void rebuildMenu() {
